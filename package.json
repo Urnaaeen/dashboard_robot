@@ -8,7 +8,8 @@
     "start": "node --env-file-if-exists=.env server.js",
     "db:init": "node --env-file-if-exists=.env scripts/init-db.js",
     "db:seed": "node --env-file-if-exists=.env scripts/init-db.js --seed",
-    "check": "node --check server.js && node --check database.js && node --check scripts/init-db.js && node --check public/app.js"
+    "user:create": "node --env-file-if-exists=.env scripts/create-user.js",
+    "check": "node --check server.js && node --check database.js && node --check auth.js && node --check scripts/init-db.js && node --check scripts/create-user.js && node --check public/app.js && node --check public/login.js"
   },
   "dependencies": {
     "pg": "^8.16.3"

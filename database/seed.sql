@@ -9,11 +9,10 @@ INSERT INTO rpa_robot (
     desktop_flow_id,
     desktop_flow_name,
     power_automate_url,
-    account_label,
+    account_name,
     machine_name,
     machine_ip,
     anydesk_id,
-    anydesk_alias,
     max_expected_run_minutes
 )
 VALUES (
@@ -31,7 +30,6 @@ VALUES (
     'BOT-PC-02',
     '10.0.0.22',
     '123 456 789',
-    'itzone-receipt-bot',
     30
 )
 ON CONFLICT (robot_code) DO NOTHING;

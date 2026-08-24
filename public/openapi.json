@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "RPA Central Monitoring API",
-    "version": "2.0.0",
-    "description": "PostgreSQL-backed API for robot inventory, latest run monitoring, and Power Automate logging. Environment, account label, machine, and AnyDesk data are stored directly on rpa_robot. Passwords are never accepted or stored."
+    "version": "3.0.0",
+    "description": "Authenticated PostgreSQL-backed API for robot inventory, latest run monitoring, and Power Automate logging. Dashboard users are provisioned directly in the database; public registration is not available."
   },
   "servers": [
     {
@@ -11,17 +11,88 @@
       "description": "Current server"
     }
   ],
+  "security": [{ "cookieAuth": [] }],
   "tags": [
+    { "name": "Authentication", "description": "Database-backed dashboard sign in and session management" },
     { "name": "Dashboard", "description": "Monitoring dashboard data" },
+    { "name": "History", "description": "Searchable robot run history" },
     { "name": "Robots", "description": "Robot master inventory" },
     { "name": "Logging", "description": "Power Automate run logging" }
   ],
   "paths": {
+    "/api/auth/login": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Sign in with a database-provisioned account",
+        "operationId": "login",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in and HttpOnly session cookie set",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Delete the current session",
+        "operationId": "logout",
+        "responses": {
+          "200": {
+            "description": "Signed out",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": ["Authentication"],
+        "summary": "Get the signed-in user",
+        "operationId": "getCurrentUser",
+        "responses": {
+          "200": {
+            "description": "Current session user",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
     "/api/health": {
       "get": {
         "tags": ["Dashboard"],
         "summary": "Check API and PostgreSQL connectivity",
         "operationId": "getHealth",
+        "security": [],
         "responses": {
           "200": {
             "description": "API and database are available",
@@ -54,19 +125,73 @@
         }
       }
     },
+    "/api/history": {
+      "get": {
+        "tags": ["History"],
+        "summary": "Search robot run history",
+        "description": "Returns newest-first run records joined with robot display information.",
+        "operationId": "getRunHistory",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Robot name/code, run ID, machine, input reference, or error text",
+            "schema": { "type": "string", "maxLength": 200 }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "oneOf": [
+                { "$ref": "#/components/schemas/RunStatus" },
+                { "type": "string", "enum": ["ALL"] }
+              ],
+              "default": "ALL"
+            }
+          },
+          {
+            "name": "startedFrom",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" }
+          },
+          {
+            "name": "startedTo",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 500, "default": 200 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Filtered run history",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RunHistoryResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
     "/api/robots": {
       "post": {
         "tags": ["Robots"],
-        "summary": "Create or update a robot",
-        "description": "Upserts by robotCode. Account and AnyDesk values are display metadata only; no passwords are accepted.",
-        "operationId": "upsertRobot",
+        "summary": "Create a robot with an automatic code",
+        "description": "Creates a robot and assigns the next unique RPA-000001 style code on the server. Account Name and AnyDesk ID are display metadata only; no passwords are accepted.",
+        "operationId": "createRobot",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/RobotUpsertRequest" },
+              "schema": { "$ref": "#/components/schemas/RobotCreateRequest" },
               "example": {
-                "robotCode": "ITZONE_RECEIPT",
                 "robotName": "ITZONE Receipt Bot",
                 "robotType": "CLOUD_DESKTOP",
                 "powerAutomateEnvironmentId": "Default-xxxxxxxx",
@@ -74,12 +199,10 @@
                 "cloudFlowName": "ITZONE Receipt Main Flow",
                 "desktopFlowId": "xxxxxxxx",
                 "desktopFlowName": "ITZONE Receipt PAD",
-                "accountLabel": "Robot Account 02",
+                "accountName": "Robot Account 02",
                 "machineName": "BOT-PC-02",
                 "machineIp": "10.0.0.22",
-                "anydeskId": "123 456 789",
-                "anydeskAlias": "itzone-receipt-bot",
-                "maxExpectedRunMinutes": 30
+                "anydeskId": "123 456 789"
               }
             }
           }
@@ -104,6 +227,7 @@
         "tags": ["Logging"],
         "summary": "Create a RUNNING robot run",
         "operationId": "startRobotRun",
+        "security": [{ "cookieAuth": [] }, { "apiKeyAuth": [] }],
         "requestBody": {
           "required": true,
           "content": {
@@ -138,6 +262,7 @@
         "tags": ["Logging"],
         "summary": "Complete a run as SUCCESS",
         "operationId": "completeRobotRun",
+        "security": [{ "cookieAuth": [] }, { "apiKeyAuth": [] }],
         "requestBody": {
           "required": true,
           "content": {
@@ -169,6 +294,7 @@
         "tags": ["Logging"],
         "summary": "Complete a run as FAILED",
         "operationId": "failRobotRun",
+        "security": [{ "cookieAuth": [] }, { "apiKeyAuth": [] }],
         "requestBody": {
           "required": true,
           "content": {
@@ -203,6 +329,7 @@
         "tags": ["Logging"],
         "summary": "Append a run event",
         "operationId": "createRunEvent",
+        "security": [{ "cookieAuth": [] }, { "apiKeyAuth": [] }],
         "requestBody": {
           "required": true,
           "content": {
@@ -236,6 +363,7 @@
         "tags": ["Logging"],
         "summary": "Set a run status",
         "operationId": "updateRunStatus",
+        "security": [{ "cookieAuth": [] }, { "apiKeyAuth": [] }],
         "requestBody": {
           "required": true,
           "content": {
@@ -261,6 +389,20 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "cookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "rpa_session",
+        "description": "HttpOnly session cookie set by /api/auth/login. The browser sends it automatically."
+      },
+      "apiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-RPA-API-Key",
+        "description": "Optional deployment secret for Power Automate logging endpoints."
+      }
+    },
     "responses": {
       "BadRequest": {
         "description": "Invalid request",
@@ -280,6 +422,24 @@
           "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
         }
       },
+      "Unauthorized": {
+        "description": "Authentication required or credentials are invalid",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+        }
+      },
+      "Forbidden": {
+        "description": "The signed-in user does not have the required role",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+        }
+      },
+      "TooManyRequests": {
+        "description": "Sign-in rate limit exceeded",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+        }
+      },
       "ServerError": {
         "description": "Unexpected server or database error",
         "content": {
@@ -288,6 +448,53 @@
       }
     },
     "schemas": {
+      "UserRole": {
+        "type": "string",
+        "enum": ["ADMIN", "OPERATOR", "VIEWER"]
+      },
+      "User": {
+        "type": "object",
+        "required": ["userId", "username", "displayName", "role", "isActive"],
+        "properties": {
+          "userId": { "type": "string", "format": "uuid" },
+          "username": { "type": "string", "example": "admin" },
+          "displayName": { "type": "string", "example": "Dashboard Admin" },
+          "role": { "$ref": "#/components/schemas/UserRole" },
+          "isActive": { "type": "boolean" },
+          "lastLoginAt": { "type": "string", "format": "date-time", "nullable": true },
+          "sessionExpiresAt": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["username", "password"],
+        "properties": {
+          "username": { "type": "string", "maxLength": 100 },
+          "password": { "type": "string", "format": "password", "minLength": 12, "maxLength": 256, "writeOnly": true }
+        }
+      },
+      "AuthResponse": {
+        "type": "object",
+        "required": ["user", "expiresAt"],
+        "properties": {
+          "user": { "$ref": "#/components/schemas/User" },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "UserResponse": {
+        "type": "object",
+        "required": ["user"],
+        "properties": {
+          "user": { "$ref": "#/components/schemas/User" }
+        }
+      },
+      "OkResponse": {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {
+          "ok": { "type": "boolean", "example": true }
+        }
+      },
       "RobotType": {
         "type": "string",
         "enum": ["CLOUD_DESKTOP", "CLOUD_ONLY", "DESKTOP_ONLY"]
@@ -308,7 +515,7 @@
         ],
         "properties": {
           "robotId": { "type": "string", "format": "uuid" },
-          "robotCode": { "type": "string", "example": "ITZONE_RECEIPT" },
+          "robotCode": { "type": "string", "example": "RPA-000001" },
           "robotName": { "type": "string", "example": "ITZONE Receipt Bot" },
           "robotType": { "$ref": "#/components/schemas/RobotType" },
           "powerAutomateEnvironmentId": { "type": "string", "nullable": true },
@@ -318,11 +525,10 @@
           "desktopFlowId": { "type": "string", "nullable": true },
           "desktopFlowName": { "type": "string", "nullable": true },
           "powerAutomateUrl": { "type": "string", "format": "uri", "nullable": true },
-          "accountLabel": { "type": "string", "nullable": true, "example": "Robot Account 02" },
+          "accountName": { "type": "string", "nullable": true, "example": "Robot Account 02" },
           "machineName": { "type": "string", "nullable": true },
           "machineIp": { "type": "string", "nullable": true },
           "anydeskId": { "type": "string", "nullable": true },
-          "anydeskAlias": { "type": "string", "nullable": true },
           "maxExpectedRunMinutes": { "type": "integer", "minimum": 1, "example": 30 },
           "isActive": { "type": "boolean" },
           "createdAt": { "type": "string", "format": "date-time" },
@@ -368,11 +574,9 @@
       },
       "HealthResponse": {
         "type": "object",
-        "required": ["ok", "database", "databaseTime", "generatedAt"],
+        "required": ["ok", "generatedAt"],
         "properties": {
           "ok": { "type": "boolean", "example": true },
-          "database": { "type": "string", "example": "rpa_monitoring" },
-          "databaseTime": { "type": "string", "format": "date-time" },
           "generatedAt": { "type": "string", "format": "date-time" }
         }
       },
@@ -386,11 +590,40 @@
           "runEvents": { "type": "array", "items": { "$ref": "#/components/schemas/RunEvent" } }
         }
       },
-      "RobotUpsertRequest": {
+      "RunHistoryItem": {
+        "allOf": [
+          { "$ref": "#/components/schemas/RobotRun" },
+          {
+            "type": "object",
+            "required": ["robotCode", "robotName", "maxExpectedRunMinutes"],
+            "properties": {
+              "robotCode": { "type": "string" },
+              "robotName": { "type": "string" },
+              "accountName": { "type": "string", "nullable": true },
+              "powerAutomateEnvironmentId": { "type": "string", "nullable": true },
+              "powerAutomateUrl": { "type": "string", "format": "uri", "nullable": true },
+              "maxExpectedRunMinutes": { "type": "integer", "minimum": 1 }
+            }
+          }
+        ]
+      },
+      "RunHistoryResponse": {
         "type": "object",
-        "required": ["robotCode", "robotName", "powerAutomateEnvironmentId", "machineName"],
+        "required": ["generatedAt", "runs", "total", "limit"],
         "properties": {
-          "robotCode": { "type": "string", "maxLength": 100 },
+          "generatedAt": { "type": "string", "format": "date-time" },
+          "runs": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RunHistoryItem" }
+          },
+          "total": { "type": "integer", "minimum": 0 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
+        }
+      },
+      "RobotCreateRequest": {
+        "type": "object",
+        "required": ["robotName", "powerAutomateEnvironmentId", "machineName"],
+        "properties": {
           "robotName": { "type": "string", "maxLength": 255 },
           "robotType": { "$ref": "#/components/schemas/RobotType" },
           "powerAutomateEnvironmentId": { "type": "string", "maxLength": 200 },
@@ -400,12 +633,10 @@
           "desktopFlowId": { "type": "string", "maxLength": 200 },
           "desktopFlowName": { "type": "string", "maxLength": 255 },
           "powerAutomateUrl": { "type": "string", "format": "uri" },
-          "accountLabel": { "type": "string", "maxLength": 150 },
+          "accountName": { "type": "string", "maxLength": 150 },
           "machineName": { "type": "string", "maxLength": 150 },
           "machineIp": { "type": "string", "maxLength": 100 },
           "anydeskId": { "type": "string", "maxLength": 100 },
-          "anydeskAlias": { "type": "string", "maxLength": 200 },
-          "maxExpectedRunMinutes": { "type": "integer", "minimum": 1, "default": 60 },
           "isActive": { "type": "boolean", "default": true }
         }
       },

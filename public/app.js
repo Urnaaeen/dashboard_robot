@@ -1,8 +1,52 @@
+const ADD_ROBOT_DRAFT_KEY_PREFIX = "rpa-monitoring:add-robot-draft";
+const EMPTY_ADD_ROBOT_DRAFT = Object.freeze({
+  robotName: "",
+  powerAutomateEnvironmentId: "",
+  machineName: "",
+  machineIp: "",
+  robotType: "CLOUD_DESKTOP",
+  accountName: "",
+  anydeskId: "",
+  cloudFlowId: "",
+  cloudFlowName: "",
+  desktopFlowId: "",
+  desktopFlowName: "",
+});
+
+function loadAddRobotDraft(storageKey) {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(storageKey) || "{}");
+    return Object.fromEntries(
+      Object.entries(EMPTY_ADD_ROBOT_DRAFT).map(([field, defaultValue]) => {
+        const savedValue = field === "accountName"
+          ? saved.accountName ?? saved.accountLabel
+          : saved[field];
+        return [field, savedValue === undefined ? defaultValue : String(savedValue)];
+      }),
+    );
+  } catch (error) {
+    return { ...EMPTY_ADD_ROBOT_DRAFT };
+  }
+}
+
 const state = {
+  currentUser: null,
   data: {
     robots: [],
     robotRuns: [],
     runEvents: [],
+  },
+  history: {
+    runs: [],
+    total: 0,
+    limit: 200,
+    search: "",
+    status: "ALL",
+    date: "",
+    loading: false,
+    loaded: false,
+    requestId: 0,
+    debounceTimer: null,
   },
   filters: {
     environmentId: "ALL",
@@ -17,8 +61,10 @@ const state = {
     errorStep: "Open Excel",
     errorMessage: "Excel file is locked.",
   },
+  addRobotDraft: { ...EMPTY_ADD_ROBOT_DRAFT },
   addRobotOpen: false,
   view: "overview",
+  detailReturnView: "overview",
   selectedRobotId: "",
   lastUpdated: null,
   refreshTimer: null,
@@ -54,6 +100,9 @@ const lastUpdated = document.querySelector("#lastUpdated");
 const pageTitle = document.querySelector("#pageTitle");
 const pageSubtitle = document.querySelector("#pageSubtitle");
 const toast = document.querySelector("#toast");
+const accountAvatar = document.querySelector("#accountAvatar");
+const accountName = document.querySelector("#accountName");
+const accountRole = document.querySelector("#accountRole");
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -62,6 +111,35 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function persistAddRobotDraft() {
+  try {
+    window.localStorage.setItem(addRobotDraftStorageKey(), JSON.stringify(state.addRobotDraft));
+  } catch (error) {
+    // The in-memory draft still protects the form during dashboard refreshes.
+  }
+}
+
+function updateAddRobotDraft(field, value) {
+  if (!Object.hasOwn(EMPTY_ADD_ROBOT_DRAFT, field)) {
+    return;
+  }
+  state.addRobotDraft[field] = String(value);
+  persistAddRobotDraft();
+}
+
+function resetAddRobotDraft() {
+  state.addRobotDraft = { ...EMPTY_ADD_ROBOT_DRAFT };
+  try {
+    window.localStorage.removeItem(addRobotDraftStorageKey());
+  } catch (error) {
+    // The draft is already reset in memory.
+  }
+}
+
+function addRobotDraftStorageKey() {
+  return `${ADD_ROBOT_DRAFT_KEY_PREFIX}:${state.currentUser?.userId || "anonymous"}`;
 }
 
 function apiFetch(path, options = {}) {
@@ -73,11 +151,41 @@ function apiFetch(path, options = {}) {
     },
   }).then(async (response) => {
     const payload = await response.json().catch(() => ({}));
+    if (response.status === 401) {
+      const next = `${window.location.pathname}${window.location.search}`;
+      window.location.replace(`/login?reason=session&next=${encodeURIComponent(next)}`);
+      throw new Error("Session expired.");
+    }
     if (!response.ok) {
       throw new Error(payload.error || `Request failed: ${response.status}`);
     }
     return payload;
   });
+}
+
+function canAdmin() {
+  return state.currentUser?.role === "ADMIN";
+}
+
+function canOperate() {
+  return ["ADMIN", "OPERATOR"].includes(state.currentUser?.role);
+}
+
+function userInitials() {
+  const value = state.currentUser?.displayName || state.currentUser?.username || "U";
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
+}
+
+async function loadCurrentUser() {
+  const payload = await apiFetch("/api/auth/me");
+  state.currentUser = payload.user;
+  state.addRobotDraft = loadAddRobotDraft(addRobotDraftStorageKey());
 }
 
 async function loadData({ silent = false } = {}) {
@@ -100,10 +208,88 @@ async function loadData({ silent = false } = {}) {
       state.logger.robotId = state.selectedRobotId;
     }
     setApiState(true);
-    render();
+    if (!(silent && state.addRobotOpen)) {
+      render();
+    }
   } catch (error) {
     setApiState(false);
-    app.innerHTML = renderEmptyState("Dashboard API is not available.", error.message);
+    if (state.addRobotOpen) {
+      showToast(error.message, "error");
+    } else {
+      app.innerHTML = renderEmptyState("Dashboard API is not available.", error.message);
+    }
+  }
+}
+
+function historyDateRange(dateValue) {
+  if (!dateValue) {
+    return {};
+  }
+  const startedFrom = new Date(`${dateValue}T00:00:00`);
+  const startedTo = new Date(startedFrom);
+  startedTo.setDate(startedTo.getDate() + 1);
+  return {
+    startedFrom: startedFrom.toISOString(),
+    startedTo: startedTo.toISOString(),
+  };
+}
+
+async function loadHistory({ silent = false } = {}) {
+  const requestId = state.history.requestId + 1;
+  state.history.requestId = requestId;
+  state.history.loading = true;
+  if (!silent && state.view === "history") {
+    render();
+  }
+
+  const params = new URLSearchParams({ limit: String(state.history.limit) });
+  if (state.history.search.trim()) {
+    params.set("search", state.history.search.trim());
+  }
+  if (state.history.status !== "ALL") {
+    params.set("status", state.history.status);
+  }
+  const dateRange = historyDateRange(state.history.date);
+  if (dateRange.startedFrom) {
+    params.set("startedFrom", dateRange.startedFrom);
+    params.set("startedTo", dateRange.startedTo);
+  }
+
+  try {
+    const payload = await apiFetch(`/api/history?${params}`);
+    if (requestId !== state.history.requestId) {
+      return;
+    }
+    state.history.runs = payload.runs || [];
+    state.history.total = Number(payload.total || 0);
+    state.history.limit = Number(payload.limit || state.history.limit);
+    state.history.loaded = true;
+    state.lastUpdated = new Date(payload.generatedAt || Date.now());
+    setApiState(true);
+  } catch (error) {
+    if (requestId !== state.history.requestId) {
+      return;
+    }
+    setApiState(false);
+    showToast(error.message, "error");
+  } finally {
+    if (requestId === state.history.requestId) {
+      state.history.loading = false;
+      if (state.view === "history") {
+        const activeFilter = document.activeElement?.dataset.historyFilter || "";
+        const selectionStart = document.activeElement?.selectionStart;
+        render();
+        if (activeFilter) {
+          window.requestAnimationFrame(() => {
+            const filter = document.querySelector(`[data-history-filter="${activeFilter}"]`);
+            filter?.focus();
+            if (typeof selectionStart === "number" && filter?.setSelectionRange) {
+              filter.setSelectionRange(selectionStart, selectionStart);
+            }
+          });
+        }
+      }
+    }
   }
 }
 
@@ -195,12 +381,10 @@ function filteredRows() {
     if (query) {
       const haystack = [
         robot.robotName,
-        robot.robotCode,
-        robot.accountLabel,
+        robot.accountName,
         robot.machineName,
         robot.machineIp,
         robot.anydeskId,
-        robot.anydeskAlias,
         robot.cloudFlowName,
         robot.desktopFlowName,
         robot.powerAutomateEnvironmentId,
@@ -234,6 +418,10 @@ function render() {
     app.innerHTML = renderRobotsView();
     return;
   }
+  if (state.view === "history") {
+    app.innerHTML = renderHistoryView();
+    return;
+  }
   if (state.view === "detail") {
     app.innerHTML = renderDetailView();
     return;
@@ -246,11 +434,15 @@ function updateChrome() {
     overview: ["RPA Monitoring", "Latest robot run status from PostgreSQL."],
     robots: ["Robots", "Master robot inventory with last run status."],
     detail: ["Robot Detail", "Robot master data and latest run information."],
+    history: ["Run History", "Robot execution records from PostgreSQL."],
   };
   const [title, subtitle] = titles[state.view] || titles.overview;
   pageTitle.textContent = title;
   pageSubtitle.textContent = subtitle;
   lastUpdated.textContent = state.lastUpdated ? `Updated ${formatDateTime(state.lastUpdated)}` : "Not loaded";
+  accountAvatar.textContent = userInitials();
+  accountName.textContent = state.currentUser?.displayName || state.currentUser?.username || "User";
+  accountRole.textContent = state.currentUser?.role || "VIEWER";
 }
 
 function updateNav() {
@@ -308,6 +500,118 @@ function renderRobotsView() {
   `;
 }
 
+function renderHistoryView() {
+  const visibleCount = state.history.runs.length;
+  const countLabel = state.history.loading
+    ? "Searching..."
+    : `${visibleCount} of ${state.history.total} records`;
+  return `
+    <div class="dashboard-stack">
+      ${renderHistoryFilters()}
+      <section class="data-panel" aria-busy="${state.history.loading}">
+        <div class="panel-heading">
+          <div>
+            <h2>Run History</h2>
+            <p>${escapeHtml(countLabel)}</p>
+          </div>
+          <button class="secondary-button" type="button" data-action="refresh">${icons.refresh}<span>Refresh</span></button>
+        </div>
+        ${state.history.loading && !state.history.loaded
+          ? '<div class="loading">Loading run history...</div>'
+          : renderHistoryTable(state.history.runs)}
+      </section>
+    </div>
+  `;
+}
+
+function renderHistoryFilters() {
+  const statuses = ["RUNNING", "SUCCESS", "FAILED", "QUEUED", "CANCELLED", "TIMEOUT", "UNKNOWN"];
+  return `
+    <section class="filter-band" aria-label="Run history search">
+      <div class="history-filter-grid">
+        <div class="field history-search-field">
+          <label for="historySearch">Search</label>
+          <input
+            id="historySearch"
+            data-history-filter="search"
+            type="search"
+            value="${escapeHtml(state.history.search)}"
+            placeholder="Robot, run ID, machine, error"
+            autocomplete="off"
+          />
+        </div>
+        <div class="field">
+          <label for="historyStatus">Status</label>
+          <select id="historyStatus" data-history-filter="status">
+            <option value="ALL">All statuses</option>
+            ${statuses
+              .map((status) => `<option value="${status}" ${selected(status, state.history.status)}>${escapeHtml(statusMeta[status]?.label || status)}</option>`)
+              .join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label for="historyDate">Started date</label>
+          <input id="historyDate" data-history-filter="date" type="date" value="${escapeHtml(state.history.date)}" />
+        </div>
+        <button class="ghost-button" type="button" data-action="clear-history-filters">${icons.filter}<span>Clear</span></button>
+      </div>
+    </section>
+  `;
+}
+
+function renderHistoryTable(historyRuns) {
+  if (!historyRuns.length) {
+    return renderEmptyState("No run history found.", "Change the search filters or start a robot run.");
+  }
+
+  return `
+    <div class="table-wrap">
+      <table class="history-table">
+        <thead>
+          <tr>
+            <th>Robot / Run</th>
+            <th>Status</th>
+            <th>Started</th>
+            <th>Ended</th>
+            <th>Duration</th>
+            <th>Machine</th>
+            <th>Error</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${historyRuns.map(renderHistoryRow).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderHistoryRow(run) {
+  const robot = { maxExpectedRunMinutes: run.maxExpectedRunMinutes };
+  const displayStatus = getDisplayStatus(robot, run);
+  const errorText = [run.errorCode, run.errorMessage].filter(Boolean).join(" - ") || "-";
+  return `
+    <tr>
+      <td>
+        <div class="robot-name">
+          <button class="link-button" type="button" data-action="detail" data-robot-id="${escapeHtml(run.robotId)}">${escapeHtml(run.robotName)}</button>
+          <span>${escapeHtml(run.robotRunId)}</span>
+        </div>
+      </td>
+      <td>${renderStatusBadge(displayStatus)}</td>
+      <td>${formatDateTime(run.startedAt)}</td>
+      <td>${formatDateTime(run.endedAt)}</td>
+      <td>${formatDuration(run, robot)}</td>
+      <td>${escapeHtml(run.machineName || "-")}</td>
+      <td class="truncate" title="${escapeHtml(errorText)}">${escapeHtml(errorText)}</td>
+      <td>
+        <button class="icon-button" type="button" data-action="detail" data-robot-id="${escapeHtml(run.robotId)}" title="Open robot detail" aria-label="Open robot detail">${icons.robot}</button>
+      </td>
+    </tr>
+  `;
+}
+
 function renderDetailView() {
   const allRows = rows();
   let selected = allRows.find((row) => row.robot.robotId === state.selectedRobotId);
@@ -323,6 +627,13 @@ function renderDetailView() {
   const runEvents = state.data.runEvents
     .filter((event) => event.robotRunId === latestRun?.robotRunId)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const loggerActions = canOperate()
+    ? `
+      <button class="secondary-button" type="button" data-action="logger-start" data-robot-id="${escapeHtml(robot.robotId)}">${icons.play}<span>Start</span></button>
+      <button class="secondary-button" type="button" data-action="logger-success" data-robot-id="${escapeHtml(robot.robotId)}">${icons.check}<span>Success</span></button>
+      <button class="danger-button" type="button" data-action="logger-failed" data-robot-id="${escapeHtml(robot.robotId)}">${icons.x}<span>Failed</span></button>
+    `
+    : "";
 
   return `
     <div class="detail-layout">
@@ -332,7 +643,7 @@ function renderDetailView() {
           <div class="detail-title-row">
             <div>
               <h2>${escapeHtml(robot.robotName)}</h2>
-              <p class="muted">${escapeHtml(robot.powerAutomateEnvironmentId || "No environment ID")} · ${escapeHtml(robot.machineName)}</p>
+              <p class="muted">${escapeHtml(robot.powerAutomateEnvironmentId || "No environment ID")} &middot; ${escapeHtml(robot.machineName)}</p>
             </div>
             ${renderStatusBadge(displayStatus)}
           </div>
@@ -340,9 +651,7 @@ function renderDetailView() {
             <a class="primary-button" href="${escapeHtml(robot.powerAutomateUrl || "#")}" target="_blank" rel="noreferrer">
               ${icons.external}<span>Open Power Automate</span>
             </a>
-            <button class="secondary-button" type="button" data-action="logger-start" data-robot-id="${escapeHtml(robot.robotId)}">${icons.play}<span>Start</span></button>
-            <button class="secondary-button" type="button" data-action="logger-success" data-robot-id="${escapeHtml(robot.robotId)}">${icons.check}<span>Success</span></button>
-            <button class="danger-button" type="button" data-action="logger-failed" data-robot-id="${escapeHtml(robot.robotId)}">${icons.x}<span>Failed</span></button>
+            ${loggerActions}
           </div>
         </div>
 
@@ -350,14 +659,11 @@ function renderDetailView() {
           ${renderFact("Environment ID", robot.powerAutomateEnvironmentId)}
           ${renderFact("Machine", robot.machineName)}
           ${renderFact("Machine IP", robot.machineIp)}
-          ${renderFact("Account Label", robot.accountLabel)}
+          ${renderFact("Account Name", robot.accountName)}
           ${renderFact("AnyDesk ID", robot.anydeskId)}
-          ${renderFact("AnyDesk Alias", robot.anydeskAlias)}
           ${renderFact("Robot Type", robot.robotType)}
-          ${renderFact("Robot Code", robot.robotCode)}
           ${renderFact("Cloud Flow", robot.cloudFlowName || "-")}
           ${renderFact("Desktop Flow", robot.desktopFlowName || "-")}
-          ${renderFact("Max Expected", `${robot.maxExpectedRunMinutes || 0} min`)}
         </div>
 
         <div class="run-summary">
@@ -370,7 +676,7 @@ function renderDetailView() {
 
       <aside class="side-stack">
         ${renderRobotPicker()}
-        ${renderLoggerPanel(robot.robotId)}
+        ${canOperate() ? renderLoggerPanel(robot.robotId) : ""}
       </aside>
     </div>
   `;
@@ -390,13 +696,16 @@ function renderKpi(label, value, note, statusClass) {
 }
 
 function renderTotalRobotsKpi(value) {
+  const action = canAdmin()
+    ? `<button class="primary-button kpi-add-button" type="button" data-action="add-robot-open">
+        ${icons.add}<span>Add Robot</span>
+      </button>`
+    : '<span class="status-badge status-unknown">Total</span>';
   return `
     <article class="kpi-card">
       <div class="kpi-label">
         <span>Total Robots</span>
-        <button class="primary-button kpi-add-button" type="button" data-action="add-robot-open">
-          ${icons.add}<span>Add Robot</span>
-        </button>
+        ${action}
       </div>
       <div class="kpi-value">${Number(value).toLocaleString()}</div>
       <div class="kpi-note">Active robots in current filter</div>
@@ -405,6 +714,7 @@ function renderTotalRobotsKpi(value) {
 }
 
 function renderAddRobotModal() {
+  const draft = state.addRobotDraft;
   return `
     <div class="modal-backdrop" data-modal-backdrop>
       <section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="addRobotTitle">
@@ -418,68 +728,57 @@ function renderAddRobotModal() {
 
         <form data-form="add-robot">
           <div class="modal-body robot-form-grid">
-            <div class="field">
-              <label for="newRobotCode">Robot Code</label>
-              <input id="newRobotCode" name="robotCode" required maxlength="100" pattern="[A-Za-z0-9_-]+" autocomplete="off" placeholder="ITZONE_RECEIPT" />
-            </div>
-            <div class="field">
+            <div class="field field-full">
               <label for="newRobotName">Robot Name</label>
-              <input id="newRobotName" name="robotName" required maxlength="255" autocomplete="off" placeholder="ITZONE Receipt Bot" />
+              <input id="newRobotName" name="robotName" value="${escapeHtml(draft.robotName)}" required maxlength="255" autocomplete="off" placeholder="ITZONE Receipt Bot" />
             </div>
             <div class="field field-full">
               <label for="newRobotEnvironment">Power Automate Environment ID</label>
-              <input id="newRobotEnvironment" name="powerAutomateEnvironmentId" required maxlength="200" autocomplete="off" placeholder="Default-xxxxxxxx" />
+              <input id="newRobotEnvironment" name="powerAutomateEnvironmentId" value="${escapeHtml(draft.powerAutomateEnvironmentId)}" required maxlength="200" autocomplete="off" placeholder="Default-xxxxxxxx" />
+            </div>
+            <div class="field field-full">
+              <label for="newRobotAnyDeskId">AnyDesk ID</label>
+              <input id="newRobotAnyDeskId" name="anydeskId" value="${escapeHtml(draft.anydeskId)}" maxlength="100" autocomplete="off" placeholder="123 456 789" />
             </div>
             <div class="field">
               <label for="newRobotMachine">Machine Name</label>
-              <input id="newRobotMachine" name="machineName" required maxlength="150" autocomplete="off" placeholder="BOT-PC-02" />
+              <input id="newRobotMachine" name="machineName" value="${escapeHtml(draft.machineName)}" required maxlength="150" autocomplete="off" placeholder="BOT-PC-02" />
             </div>
             <div class="field">
               <label for="newRobotMachineIp">Machine IP</label>
-              <input id="newRobotMachineIp" name="machineIp" maxlength="100" autocomplete="off" placeholder="10.0.0.22" />
+              <input id="newRobotMachineIp" name="machineIp" value="${escapeHtml(draft.machineIp)}" maxlength="100" autocomplete="off" placeholder="10.0.0.22" />
             </div>
             <div class="field">
               <label for="newRobotType">Robot Type</label>
               <select id="newRobotType" name="robotType">
-                <option value="CLOUD_DESKTOP">Cloud + Desktop</option>
-                <option value="CLOUD_ONLY">Cloud only</option>
-                <option value="DESKTOP_ONLY">Desktop only</option>
+                <option value="CLOUD_DESKTOP" ${selected("CLOUD_DESKTOP", draft.robotType)}>Cloud + Desktop</option>
+                <option value="CLOUD_ONLY" ${selected("CLOUD_ONLY", draft.robotType)}>Cloud only</option>
+                <option value="DESKTOP_ONLY" ${selected("DESKTOP_ONLY", draft.robotType)}>Desktop only</option>
               </select>
             </div>
             <div class="field">
-              <label for="newRobotAccount">Account Label</label>
-              <input id="newRobotAccount" name="accountLabel" maxlength="150" autocomplete="off" placeholder="Robot Account 02" />
-            </div>
-            <div class="field">
-              <label for="newRobotMaxRun">Max Expected Run</label>
-              <input id="newRobotMaxRun" name="maxExpectedRunMinutes" type="number" min="1" max="1440" value="60" required />
-            </div>
-            <div class="field">
-              <label for="newRobotAnyDeskId">AnyDesk ID</label>
-              <input id="newRobotAnyDeskId" name="anydeskId" maxlength="100" autocomplete="off" placeholder="123 456 789" />
-            </div>
-            <div class="field field-full">
-              <label for="newRobotAnyDeskAlias">AnyDesk Alias</label>
-              <input id="newRobotAnyDeskAlias" name="anydeskAlias" maxlength="200" autocomplete="off" placeholder="itzone-receipt-bot" />
+              <label for="newRobotAccount">Account Name</label>
+              <input id="newRobotAccount" name="accountName" value="${escapeHtml(draft.accountName)}" maxlength="150" autocomplete="off" placeholder="Robot Account 02" />
             </div>
             <div class="field">
               <label for="newRobotCloudFlowId">Cloud Flow ID</label>
-              <input id="newRobotCloudFlowId" name="cloudFlowId" maxlength="200" autocomplete="off" placeholder="xxxxxxxx" />
+              <input id="newRobotCloudFlowId" name="cloudFlowId" value="${escapeHtml(draft.cloudFlowId)}" maxlength="200" autocomplete="off" placeholder="xxxxxxxx" />
             </div>
             <div class="field">
               <label for="newRobotCloudFlow">Cloud Flow Name</label>
-              <input id="newRobotCloudFlow" name="cloudFlowName" maxlength="255" autocomplete="off" placeholder="ITZONE Receipt Main Flow" />
+              <input id="newRobotCloudFlow" name="cloudFlowName" value="${escapeHtml(draft.cloudFlowName)}" maxlength="255" autocomplete="off" placeholder="ITZONE Receipt Main Flow" />
             </div>
             <div class="field">
               <label for="newRobotDesktopFlowId">Desktop Flow ID</label>
-              <input id="newRobotDesktopFlowId" name="desktopFlowId" maxlength="200" autocomplete="off" placeholder="xxxxxxxx" />
+              <input id="newRobotDesktopFlowId" name="desktopFlowId" value="${escapeHtml(draft.desktopFlowId)}" maxlength="200" autocomplete="off" placeholder="xxxxxxxx" />
             </div>
             <div class="field">
               <label for="newRobotDesktopFlow">Desktop Flow Name</label>
-              <input id="newRobotDesktopFlow" name="desktopFlowName" maxlength="255" autocomplete="off" placeholder="ITZONE Receipt PAD" />
+              <input id="newRobotDesktopFlow" name="desktopFlowName" value="${escapeHtml(draft.desktopFlowName)}" maxlength="255" autocomplete="off" placeholder="ITZONE Receipt PAD" />
             </div>
           </div>
           <div class="modal-actions">
+            <button class="ghost-button" type="button" data-action="add-robot-clear">Clear fields</button>
             <button class="secondary-button" type="button" data-action="add-robot-close">Cancel</button>
             <button class="primary-button" type="submit">${icons.add}<span>Add Robot</span></button>
           </div>
@@ -546,7 +845,7 @@ function renderRobotTable(tableRows, options = {}) {
   }
 
   const heading = options.inventory
-    ? "<th>Robot</th><th>Env</th><th>Type</th><th>Machine</th><th>Max</th><th>Status</th><th>Last Run</th><th></th>"
+    ? "<th>Robot</th><th>Env</th><th>Type</th><th>Machine</th><th>Status</th><th>Last Run</th><th></th>"
     : "<th>Robot</th><th>Environment</th><th>Machine</th><th>Status</th><th>Last Run</th><th>Duration</th><th>Error</th><th></th>";
 
   return `
@@ -569,7 +868,7 @@ function renderOverviewRow({ robot, latestRun, displayStatus }) {
       <td>
         <div class="robot-name">
           <button class="link-button" type="button" data-action="detail" data-robot-id="${escapeHtml(robot.robotId)}">${escapeHtml(robot.robotName)}</button>
-          <span>${escapeHtml(robot.accountLabel || robot.robotCode)}</span>
+          <span>${escapeHtml(robot.accountName || "No account name")}</span>
         </div>
       </td>
       <td>${escapeHtml(robot.powerAutomateEnvironmentId || "-")}</td>
@@ -594,13 +893,12 @@ function renderInventoryRow({ robot, latestRun, displayStatus }) {
       <td>
         <div class="robot-name">
           <button class="link-button" type="button" data-action="detail" data-robot-id="${escapeHtml(robot.robotId)}">${escapeHtml(robot.robotName)}</button>
-          <span>${escapeHtml(robot.robotCode)}</span>
+          <span>${escapeHtml(robot.accountName || robot.robotType)}</span>
         </div>
       </td>
       <td>${escapeHtml(robot.powerAutomateEnvironmentId || "-")}</td>
       <td>${escapeHtml(robot.robotType)}</td>
       <td>${escapeHtml(robot.machineName)}</td>
-      <td>${escapeHtml(robot.maxExpectedRunMinutes || 0)} min</td>
       <td>${renderStatusBadge(displayStatus)}</td>
       <td>${formatDateTime(latestRun?.startedAt)}</td>
       <td>
@@ -735,7 +1033,7 @@ function renderEventList(events) {
           return `
             <div class="event-item ${className}">
               <strong>${escapeHtml(event.stepName || event.eventType)}</strong>
-              <span>${escapeHtml(formatDateTime(event.createdAt))} · ${escapeHtml(event.eventType)}</span>
+              <span>${escapeHtml(formatDateTime(event.createdAt))} &middot; ${escapeHtml(event.eventType)}</span>
               <div>${escapeHtml(event.message)}</div>
             </div>
           `;
@@ -819,6 +1117,10 @@ function latestRunForRobot(robotId) {
 }
 
 async function handleLoggerAction(action, robotId) {
+  if (!canOperate()) {
+    showToast("You do not have permission for logging actions.", "error");
+    return;
+  }
   const targetRobotId = robotId || state.logger.robotId || state.selectedRobotId;
   if (!targetRobotId) {
     showToast("Select a robot first.", "error");
@@ -882,12 +1184,24 @@ function clearFilters() {
   render();
 }
 
+async function clearHistoryFilters() {
+  window.clearTimeout(state.history.debounceTimer);
+  state.history.search = "";
+  state.history.status = "ALL";
+  state.history.date = "";
+  await loadHistory();
+}
+
 function setAddRobotModal(isOpen) {
+  if (isOpen && !canAdmin()) {
+    showToast("Only administrators can add robots.", "error");
+    return;
+  }
   state.addRobotOpen = isOpen;
   document.body.classList.toggle("modal-open", isOpen);
   render();
   if (isOpen) {
-    window.requestAnimationFrame(() => document.querySelector("#newRobotCode")?.focus());
+    window.requestAnimationFrame(() => document.querySelector("#newRobotName")?.focus());
   }
 }
 
@@ -901,7 +1215,6 @@ async function handleAddRobotSubmit(form) {
     const payload = await apiFetch("/api/robots", {
       method: "POST",
       body: JSON.stringify({
-        robotCode: String(formData.get("robotCode") || "").trim(),
         robotName: String(formData.get("robotName") || "").trim(),
         powerAutomateEnvironmentId: String(
           formData.get("powerAutomateEnvironmentId") || "",
@@ -909,10 +1222,8 @@ async function handleAddRobotSubmit(form) {
         machineName: String(formData.get("machineName") || "").trim(),
         machineIp: String(formData.get("machineIp") || "").trim(),
         robotType: String(formData.get("robotType") || "CLOUD_DESKTOP"),
-        accountLabel: String(formData.get("accountLabel") || "").trim(),
+        accountName: String(formData.get("accountName") || "").trim(),
         anydeskId: String(formData.get("anydeskId") || "").trim(),
-        anydeskAlias: String(formData.get("anydeskAlias") || "").trim(),
-        maxExpectedRunMinutes: Number(formData.get("maxExpectedRunMinutes") || 60),
         cloudFlowId: String(formData.get("cloudFlowId") || "").trim(),
         cloudFlowName: String(formData.get("cloudFlowName") || "").trim(),
         desktopFlowId: String(formData.get("desktopFlowId") || "").trim(),
@@ -922,6 +1233,7 @@ async function handleAddRobotSubmit(form) {
     });
 
     state.addRobotOpen = false;
+    resetAddRobotDraft();
     document.body.classList.remove("modal-open");
     state.selectedRobotId = payload.robot.robotId;
     state.logger.robotId = payload.robot.robotId;
@@ -952,14 +1264,33 @@ document.addEventListener("click", async (event) => {
     const action = actionTarget.dataset.action;
     const robotId = actionTarget.dataset.robotId || "";
 
+    if (action === "logout") {
+      try {
+        await apiFetch("/api/auth/logout", { method: "POST", body: "{}" });
+      } finally {
+        window.location.replace("/login");
+      }
+      return;
+    }
+
     if (action === "refresh") {
-      await loadData({ silent: true });
-      showToast("Dashboard refreshed.");
+      if (state.view === "history") {
+        await loadHistory({ silent: true });
+        showToast("History refreshed.");
+      } else {
+        await loadData({ silent: true });
+        showToast("Dashboard refreshed.");
+      }
       return;
     }
 
     if (action === "clear-filters") {
       clearFilters();
+      return;
+    }
+
+    if (action === "clear-history-filters") {
+      await clearHistoryFilters();
       return;
     }
 
@@ -973,7 +1304,17 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
+    if (action === "add-robot-clear") {
+      resetAddRobotDraft();
+      render();
+      window.requestAnimationFrame(() => document.querySelector("#newRobotName")?.focus());
+      return;
+    }
+
     if (action === "detail") {
+      state.detailReturnView = ["history", "robots"].includes(state.view)
+        ? state.view
+        : "overview";
       state.selectedRobotId = robotId;
       state.logger.robotId = robotId;
       state.view = "detail";
@@ -982,7 +1323,7 @@ document.addEventListener("click", async (event) => {
     }
 
     if (action === "back") {
-      state.view = "overview";
+      state.view = state.detailReturnView || "overview";
       render();
       return;
     }
@@ -999,6 +1340,9 @@ document.addEventListener("click", async (event) => {
     document.body.classList.remove("modal-open");
     state.view = viewTarget.dataset.view;
     render();
+    if (state.view === "history" && !state.history.loaded) {
+      await loadHistory();
+    }
   }
 });
 
@@ -1012,6 +1356,21 @@ document.addEventListener("submit", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  const addRobotForm = event.target.closest('[data-form="add-robot"]');
+  if (addRobotForm && event.target.name) {
+    updateAddRobotDraft(event.target.name, event.target.value);
+    return;
+  }
+
+  const historyFilter = event.target.closest("[data-history-filter]");
+  if (historyFilter) {
+    state.history[historyFilter.dataset.historyFilter] = historyFilter.value;
+    if (historyFilter.dataset.historyFilter !== "search") {
+      loadHistory();
+    }
+    return;
+  }
+
   const filter = event.target.closest("[data-filter]");
   if (filter) {
     state.filters[filter.dataset.filter] = filter.value;
@@ -1034,6 +1393,22 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+  const addRobotForm = event.target.closest('[data-form="add-robot"]');
+  if (addRobotForm && event.target.name) {
+    updateAddRobotDraft(event.target.name, event.target.value);
+    return;
+  }
+
+  const historyFilter = event.target.closest('[data-history-filter="search"]');
+  if (historyFilter) {
+    state.history.search = historyFilter.value;
+    window.clearTimeout(state.history.debounceTimer);
+    state.history.debounceTimer = window.setTimeout(() => {
+      loadHistory({ silent: true });
+    }, 400);
+    return;
+  }
+
   const filter = event.target.closest("[data-filter]");
   if (filter) {
     state.filters[filter.dataset.filter] = filter.value;
@@ -1054,12 +1429,31 @@ window.addEventListener("keydown", async (event) => {
   }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r") {
     event.preventDefault();
-    await loadData({ silent: true });
-    showToast("Dashboard refreshed.");
+    if (state.view === "history") {
+      await loadHistory({ silent: true });
+      showToast("History refreshed.");
+    } else {
+      await loadData({ silent: true });
+      showToast("Dashboard refreshed.");
+    }
   }
 });
 
-loadData();
-state.refreshTimer = window.setInterval(() => {
-  loadData({ silent: true });
-}, 30000);
+async function initialize() {
+  try {
+    await loadCurrentUser();
+    await loadData();
+    state.refreshTimer = window.setInterval(() => {
+      if (state.view === "history") {
+        loadHistory({ silent: true });
+      } else {
+        loadData({ silent: true });
+      }
+    }, 30000);
+  } catch (error) {
+    setApiState(false);
+    app.innerHTML = renderEmptyState("Dashboard API is not available.", error.message);
+  }
+}
+
+initialize();

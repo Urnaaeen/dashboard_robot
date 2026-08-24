@@ -45,11 +45,10 @@ function mapRobot(row) {
     desktopFlowId: row.desktop_flow_id,
     desktopFlowName: row.desktop_flow_name,
     powerAutomateUrl: row.power_automate_url,
-    accountLabel: row.account_label,
+    accountName: row.account_name,
     machineName: row.machine_name,
     machineIp: row.machine_ip,
     anydeskId: row.anydesk_id,
-    anydeskAlias: row.anydesk_alias,
     maxExpectedRunMinutes: row.max_expected_run_minutes,
     isActive: row.is_active,
     createdAt: row.created_at,
@@ -80,6 +79,18 @@ function mapRobotRun(row) {
   };
 }
 
+function mapRunHistory(row) {
+  return {
+    ...mapRobotRun(row),
+    robotCode: row.robot_code,
+    robotName: row.robot_name,
+    accountName: row.account_name,
+    powerAutomateEnvironmentId: row.power_automate_environment_id,
+    powerAutomateUrl: row.power_automate_url,
+    maxExpectedRunMinutes: row.max_expected_run_minutes,
+  };
+}
+
 function mapRunEvent(row) {
   return {
     runEventId: row.id,
@@ -92,6 +103,19 @@ function mapRunEvent(row) {
   };
 }
 
+function mapAppUser(row) {
+  return {
+    userId: row.user_id || row.id,
+    username: row.username,
+    displayName: row.display_name,
+    role: row.role,
+    isActive: row.is_active,
+    lastLoginAt: row.last_login_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function httpError(message, statusCode) {
   return Object.assign(new Error(message), { statusCode });
 }
@@ -101,6 +125,9 @@ function translateDatabaseError(error) {
     return error;
   }
   if (error.code === "23505") {
+    if (error.constraint === "rpa_app_user_username_key") {
+      return httpError("Username must be unique.", 409);
+    }
     return httpError("robotCode must be unique.", 409);
   }
   if (["22P02", "22007", "22023", "23503", "23514"].includes(error.code)) {
@@ -135,6 +162,121 @@ async function seedSampleData() {
 async function ping() {
   const result = await pool.query("SELECT current_database() AS database_name, NOW() AS database_time");
   return result.rows[0];
+}
+
+async function findUserByUsername(username) {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM rpa_app_user
+      WHERE username = $1
+      LIMIT 1
+    `,
+    [String(username || "").trim().toLowerCase()],
+  );
+  if (!result.rowCount) {
+    return null;
+  }
+  return {
+    ...mapAppUser(result.rows[0]),
+    passwordHash: result.rows[0].password_hash,
+  };
+}
+
+async function createOrUpdateUser({ username, displayName, passwordHash, role, isActive = true }) {
+  try {
+    const result = await pool.query(
+      `
+        INSERT INTO rpa_app_user (
+          username, display_name, password_hash, role, is_active
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (username) DO UPDATE SET
+          display_name = EXCLUDED.display_name,
+          password_hash = EXCLUDED.password_hash,
+          role = EXCLUDED.role,
+          is_active = EXCLUDED.is_active
+        RETURNING *
+      `,
+      [username, displayName, passwordHash, role, isActive],
+    );
+    return mapAppUser(result.rows[0]);
+  } catch (error) {
+    throw translateDatabaseError(error);
+  }
+}
+
+async function createUserSession({ userId, tokenHash, expiresAt, userAgent, ipAddress }) {
+  return withTransaction(async (client) => {
+    await client.query("DELETE FROM rpa_user_session WHERE expires_at <= NOW()");
+    await client.query(
+      `
+        DELETE FROM rpa_user_session
+        WHERE user_id = $1
+          AND id NOT IN (
+            SELECT id
+            FROM rpa_user_session
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 4
+          )
+      `,
+      [userId],
+    );
+    await client.query(
+      `
+        INSERT INTO rpa_user_session (
+          user_id, token_hash, expires_at, user_agent, ip_address
+        )
+        VALUES ($1, $2, $3, $4, $5)
+      `,
+      [userId, tokenHash, expiresAt, nullable(userAgent), nullable(ipAddress)],
+    );
+    await client.query("UPDATE rpa_app_user SET last_login_at = NOW() WHERE id = $1", [userId]);
+  });
+}
+
+async function getUserBySessionTokenHash(tokenHash) {
+  const result = await pool.query(
+    `
+      SELECT
+        app_user.id AS user_id,
+        app_user.username,
+        app_user.display_name,
+        app_user.role,
+        app_user.is_active,
+        app_user.last_login_at,
+        app_user.created_at,
+        app_user.updated_at,
+        user_session.expires_at AS session_expires_at,
+        user_session.last_seen_at AS session_last_seen_at
+      FROM rpa_user_session AS user_session
+      JOIN rpa_app_user AS app_user ON app_user.id = user_session.user_id
+      WHERE user_session.token_hash = $1
+        AND user_session.expires_at > NOW()
+        AND app_user.is_active = TRUE
+      LIMIT 1
+    `,
+    [tokenHash],
+  );
+  if (!result.rowCount) {
+    return null;
+  }
+  const row = result.rows[0];
+  if (Date.now() - new Date(row.session_last_seen_at).getTime() > 5 * 60 * 1000) {
+    await pool.query(
+      "UPDATE rpa_user_session SET last_seen_at = NOW() WHERE token_hash = $1",
+      [tokenHash],
+    );
+  }
+  return {
+    ...mapAppUser(row),
+    sessionExpiresAt: row.session_expires_at,
+  };
+}
+
+async function deleteUserSession(tokenHash) {
+  await pool.query("DELETE FROM rpa_user_session WHERE token_hash = $1", [tokenHash]);
 }
 
 async function getDashboardData() {
@@ -180,6 +322,56 @@ async function getDashboardData() {
   };
 }
 
+async function getRunHistory({ search, status, startedFrom, startedTo, limit }) {
+  const normalizedSearch = String(search || "").trim().slice(0, 200);
+  const normalizedStatus = String(status || "ALL").trim().toUpperCase();
+  const safeLimit = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  const result = await pool.query(
+    `
+      SELECT
+        robot_run.*,
+        robot.robot_code,
+        robot.robot_name,
+        robot.account_name,
+        robot.power_automate_environment_id,
+        robot.power_automate_url,
+        robot.max_expected_run_minutes,
+        COUNT(*) OVER() AS total_count
+      FROM rpa_robot_run AS robot_run
+      JOIN rpa_robot AS robot ON robot.id = robot_run.robot_id
+      WHERE (
+        $1 = ''
+        OR robot.robot_name ILIKE '%' || $1 || '%'
+        OR robot.robot_code ILIKE '%' || $1 || '%'
+        OR robot_run.id::text ILIKE '%' || $1 || '%'
+        OR COALESCE(robot_run.machine_name, '') ILIKE '%' || $1 || '%'
+        OR COALESCE(robot_run.error_code, '') ILIKE '%' || $1 || '%'
+        OR COALESCE(robot_run.error_message, '') ILIKE '%' || $1 || '%'
+        OR COALESCE(robot_run.error_step, '') ILIKE '%' || $1 || '%'
+        OR COALESCE(robot_run.input_reference, '') ILIKE '%' || $1 || '%'
+      )
+        AND ($2 = 'ALL' OR robot_run.status = $2)
+        AND ($3::timestamptz IS NULL OR robot_run.started_at >= $3::timestamptz)
+        AND ($4::timestamptz IS NULL OR robot_run.started_at < $4::timestamptz)
+      ORDER BY robot_run.started_at DESC
+      LIMIT $5
+    `,
+    [
+      normalizedSearch,
+      normalizedStatus,
+      nullable(startedFrom),
+      nullable(startedTo),
+      safeLimit,
+    ],
+  );
+
+  return {
+    runs: result.rows.map(mapRunHistory),
+    total: Number(result.rows[0]?.total_count || 0),
+    limit: safeLimit,
+  };
+}
+
 function buildPowerAutomateUrl(payload) {
   const explicitUrl = nullable(payload.powerAutomateUrl);
   if (explicitUrl) {
@@ -199,9 +391,9 @@ function buildPowerAutomateUrl(payload) {
   return null;
 }
 
-async function upsertRobot(payload) {
+async function saveRobot(executor, payload, robotCode) {
   const values = [
-    String(payload.robotCode || "").trim().toUpperCase(),
+    robotCode,
     String(payload.robotName || "").trim(),
     payload.robotType || "CLOUD_DESKTOP",
     nullable(payload.powerAutomateEnvironmentId),
@@ -211,45 +403,27 @@ async function upsertRobot(payload) {
     nullable(payload.desktopFlowId),
     nullable(payload.desktopFlowName),
     buildPowerAutomateUrl(payload),
-    nullable(payload.accountLabel),
+    nullable(payload.accountName ?? payload.accountLabel),
     nullable(payload.machineName),
     nullable(payload.machineIp),
     nullable(payload.anydeskId),
-    nullable(payload.anydeskAlias),
     Number(payload.maxExpectedRunMinutes || 60),
     payload.isActive !== false,
   ];
 
   try {
-    const result = await pool.query(
+    const result = await executor.query(
       `
         INSERT INTO rpa_robot (
           robot_code, robot_name, robot_type, power_automate_environment_id,
           cloud_flow_id, cloud_flow_name, cloud_trigger_name, desktop_flow_id,
-          desktop_flow_name, power_automate_url, account_label, machine_name,
-          machine_ip, anydesk_id, anydesk_alias, max_expected_run_minutes, is_active
+          desktop_flow_name, power_automate_url, account_name, machine_name,
+          machine_ip, anydesk_id, max_expected_run_minutes, is_active
         )
         VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9,
-          $10, $11, $12, $13, $14, $15, $16, $17
+          $10, $11, $12, $13, $14, $15, $16
         )
-        ON CONFLICT (robot_code) DO UPDATE SET
-          robot_name = EXCLUDED.robot_name,
-          robot_type = EXCLUDED.robot_type,
-          power_automate_environment_id = EXCLUDED.power_automate_environment_id,
-          cloud_flow_id = EXCLUDED.cloud_flow_id,
-          cloud_flow_name = EXCLUDED.cloud_flow_name,
-          cloud_trigger_name = EXCLUDED.cloud_trigger_name,
-          desktop_flow_id = EXCLUDED.desktop_flow_id,
-          desktop_flow_name = EXCLUDED.desktop_flow_name,
-          power_automate_url = EXCLUDED.power_automate_url,
-          account_label = EXCLUDED.account_label,
-          machine_name = EXCLUDED.machine_name,
-          machine_ip = EXCLUDED.machine_ip,
-          anydesk_id = EXCLUDED.anydesk_id,
-          anydesk_alias = EXCLUDED.anydesk_alias,
-          max_expected_run_minutes = EXCLUDED.max_expected_run_minutes,
-          is_active = EXCLUDED.is_active
         RETURNING *
       `,
       values,
@@ -258,6 +432,28 @@ async function upsertRobot(payload) {
   } catch (error) {
     throw translateDatabaseError(error);
   }
+}
+
+async function generateRobotCode(client) {
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('rpa_robot_code_generation'))");
+  const result = await client.query(`
+    SELECT COALESCE(MAX(SUBSTRING(robot_code FROM '^RPA-([0-9]{6})$')::INTEGER), 0) + 1
+      AS next_number
+    FROM rpa_robot
+    WHERE robot_code ~ '^RPA-[0-9]{6}$'
+  `);
+  const nextNumber = Number(result.rows[0].next_number);
+  if (nextNumber > 999999) {
+    throw httpError("Robot code range RPA-000001 to RPA-999999 is exhausted.", 409);
+  }
+  return `RPA-${String(nextNumber).padStart(6, "0")}`;
+}
+
+async function createRobot(payload) {
+  return withTransaction(async (client) => {
+    const generatedCode = await generateRobotCode(client);
+    return saveRobot(client, payload, generatedCode);
+  });
 }
 
 async function startRobotRun(payload) {
@@ -443,14 +639,20 @@ async function close() {
 
 module.exports = {
   close,
+  createRobot,
   createRunEvent,
+  createOrUpdateUser,
+  createUserSession,
+  deleteUserSession,
+  findUserByUsername,
   finishRobotRun,
   getDashboardData,
+  getRunHistory,
+  getUserBySessionTokenHash,
   initializeSchema,
   ping,
   seedSampleData,
   startRobotRun,
   translateDatabaseError,
   updateRunStatus,
-  upsertRobot,
 };

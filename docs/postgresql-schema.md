@@ -8,10 +8,13 @@ rpa_robot
        1:N rpa_run_event
        1:N rpa_control_action
   1:N rpa_control_action
+
+rpa_app_user
+  1:N rpa_user_session
 ```
 
 `rpa_environment` table intentionally does not exist.
-`power_automate_environment_id` is a column on `rpa_robot`.
+`power_automate_environment_id` and `account_name` are columns on `rpa_robot`.
 
 ## Dashboard query
 
@@ -32,7 +35,7 @@ WHERE robot.is_active = TRUE;
 
 ## Security boundary
 
-Only display labels and connection metadata are stored. These fields do not exist:
+Robot and Power Automate passwords are not stored. These fields do not exist:
 
 ```text
 password
@@ -42,3 +45,7 @@ power_automate_password
 
 Production database credentials must be supplied through `DATABASE_URL` and must
 not be committed to the repository.
+
+Dashboard credentials are stored separately in `rpa_app_user`. Only salted
+`scrypt` password hashes are stored. Browser session tokens are kept as SHA-256
+hashes in `rpa_user_session`; public user registration is not available.
