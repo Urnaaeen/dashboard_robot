@@ -1,0 +1,16 @@
+{
+  "name": "rpa-central-monitoring-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local RPA central monitoring dashboard prototype with robot logging endpoints.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "db:init": "node --env-file-if-exists=.env scripts/init-db.js",
+    "db:seed": "node --env-file-if-exists=.env scripts/init-db.js --seed",
+    "check": "node --check server.js && node --check database.js && node --check scripts/init-db.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  }
+}

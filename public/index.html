@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RPA Central Monitoring</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8A2.5 2.5 0 0 1 17.5 17H14l-2 3-2-3H6.5A2.5 2.5 0 0 1 4 14.5v-8Z" />
+              <path d="M8 9h8M8 12h5" />
+            </svg>
+          </div>
+          <div>
+            <strong>RPA Monitoring</strong>
+            <span>Central Dashboard</span>
+          </div>
+        </div>
+
+        <nav class="nav-list" aria-label="Dashboard screens">
+          <button class="nav-item is-active" type="button" data-view="overview">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M4 13h6V4H4v9Zm10 7h6V4h-6v16ZM4 20h6v-4H4v4Z" />
+            </svg>
+            <span>Overview</span>
+          </button>
+          <button class="nav-item" type="button" data-view="robots">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M9 7h6m-8 4h10m-9 4h8M6 3h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />
+            </svg>
+            <span>Robots</span>
+          </button>
+          <button class="nav-item" type="button" data-view="detail">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M12 13a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm6 8a6 6 0 0 0-12 0m13-8 2 2m-4 0 2-2" />
+            </svg>
+            <span>Robot Detail</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="connection">
+            <span class="connection-dot" id="apiDot"></span>
+            <span id="apiStatus">Connecting</span>
+          </div>
+          <button class="icon-button" type="button" data-action="refresh" title="Refresh dashboard" aria-label="Refresh dashboard">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v6h-6" />
+            </svg>
+          </button>
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Dashboard phase</p>
+            <h1 id="pageTitle">RPA Monitoring</h1>
+            <p id="pageSubtitle">Latest robot run status from PostgreSQL.</p>
+          </div>
+          <div class="topbar-actions">
+            <span class="timestamp" id="lastUpdated">Not loaded</span>
+          </div>
+        </header>
+
+        <section id="app" class="view-root" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

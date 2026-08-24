@@ -1,0 +1,501 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "RPA Central Monitoring API",
+    "version": "2.0.0",
+    "description": "PostgreSQL-backed API for robot inventory, latest run monitoring, and Power Automate logging. Environment, account label, machine, and AnyDesk data are stored directly on rpa_robot. Passwords are never accepted or stored."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Current server"
+    }
+  ],
+  "tags": [
+    { "name": "Dashboard", "description": "Monitoring dashboard data" },
+    { "name": "Robots", "description": "Robot master inventory" },
+    { "name": "Logging", "description": "Power Automate run logging" }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "tags": ["Dashboard"],
+        "summary": "Check API and PostgreSQL connectivity",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "API and database are available",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/dashboard": {
+      "get": {
+        "tags": ["Dashboard"],
+        "summary": "Get active robots and their latest runs",
+        "description": "Returns active rpa_robot rows, the latest rpa_robot_run for each robot, and events for those runs.",
+        "operationId": "getDashboard",
+        "responses": {
+          "200": {
+            "description": "Dashboard data",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DashboardResponse" }
+              }
+            }
+          },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/robots": {
+      "post": {
+        "tags": ["Robots"],
+        "summary": "Create or update a robot",
+        "description": "Upserts by robotCode. Account and AnyDesk values are display metadata only; no passwords are accepted.",
+        "operationId": "upsertRobot",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RobotUpsertRequest" },
+              "example": {
+                "robotCode": "ITZONE_RECEIPT",
+                "robotName": "ITZONE Receipt Bot",
+                "robotType": "CLOUD_DESKTOP",
+                "powerAutomateEnvironmentId": "Default-xxxxxxxx",
+                "cloudFlowId": "xxxxxxxx",
+                "cloudFlowName": "ITZONE Receipt Main Flow",
+                "desktopFlowId": "xxxxxxxx",
+                "desktopFlowName": "ITZONE Receipt PAD",
+                "accountLabel": "Robot Account 02",
+                "machineName": "BOT-PC-02",
+                "machineIp": "10.0.0.22",
+                "anydeskId": "123 456 789",
+                "anydeskAlias": "itzone-receipt-bot",
+                "maxExpectedRunMinutes": 30
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created or updated robot",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RobotResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/logger/start": {
+      "post": {
+        "tags": ["Logging"],
+        "summary": "Create a RUNNING robot run",
+        "operationId": "startRobotRun",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoggerStartRequest" },
+              "example": {
+                "robotId": "00000000-0000-4000-8000-000000000001",
+                "cloudFlowRunId": "flow-run-001",
+                "machineName": "BOT-PC-02",
+                "inputReference": "invoice-batch-2026-08-24"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "RUNNING record created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RobotRunResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/logger/success": {
+      "post": {
+        "tags": ["Logging"],
+        "summary": "Complete a run as SUCCESS",
+        "operationId": "completeRobotRun",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoggerSuccessRequest" },
+              "example": {
+                "robotRunId": "10000000-0000-4000-8000-000000000001"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Run updated to SUCCESS",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RobotRunResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/logger/failed": {
+      "post": {
+        "tags": ["Logging"],
+        "summary": "Complete a run as FAILED",
+        "operationId": "failRobotRun",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoggerFailedRequest" },
+              "example": {
+                "robotRunId": "10000000-0000-4000-8000-000000000001",
+                "errorCode": "EXCEL_LOCKED",
+                "errorMessage": "Excel file is locked by another process",
+                "errorStep": "Open Excel"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Run updated to FAILED",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RobotRunResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/logger/event": {
+      "post": {
+        "tags": ["Logging"],
+        "summary": "Append a run event",
+        "operationId": "createRunEvent",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RunEventCreateRequest" },
+              "example": {
+                "robotRunId": "10000000-0000-4000-8000-000000000001",
+                "eventType": "INFO",
+                "stepName": "Open Excel",
+                "message": "Excel application opened."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Event created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RunEventResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/runs/status": {
+      "post": {
+        "tags": ["Logging"],
+        "summary": "Set a run status",
+        "operationId": "updateRunStatus",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RunStatusUpdateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Run status updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RobotRunResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid request",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+        }
+      },
+      "NotFound": {
+        "description": "Record not found",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+        }
+      },
+      "Conflict": {
+        "description": "Unique value conflict",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+        }
+      },
+      "ServerError": {
+        "description": "Unexpected server or database error",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+        }
+      }
+    },
+    "schemas": {
+      "RobotType": {
+        "type": "string",
+        "enum": ["CLOUD_DESKTOP", "CLOUD_ONLY", "DESKTOP_ONLY"]
+      },
+      "RunStatus": {
+        "type": "string",
+        "enum": ["QUEUED", "RUNNING", "SUCCESS", "FAILED", "CANCELLED", "TIMEOUT", "UNKNOWN"]
+      },
+      "EventType": {
+        "type": "string",
+        "enum": ["INFO", "WARNING", "ERROR"]
+      },
+      "Robot": {
+        "type": "object",
+        "required": [
+          "robotId", "robotCode", "robotName", "robotType",
+          "maxExpectedRunMinutes", "isActive", "createdAt", "updatedAt"
+        ],
+        "properties": {
+          "robotId": { "type": "string", "format": "uuid" },
+          "robotCode": { "type": "string", "example": "ITZONE_RECEIPT" },
+          "robotName": { "type": "string", "example": "ITZONE Receipt Bot" },
+          "robotType": { "$ref": "#/components/schemas/RobotType" },
+          "powerAutomateEnvironmentId": { "type": "string", "nullable": true },
+          "cloudFlowId": { "type": "string", "nullable": true },
+          "cloudFlowName": { "type": "string", "nullable": true },
+          "cloudTriggerName": { "type": "string", "nullable": true },
+          "desktopFlowId": { "type": "string", "nullable": true },
+          "desktopFlowName": { "type": "string", "nullable": true },
+          "powerAutomateUrl": { "type": "string", "format": "uri", "nullable": true },
+          "accountLabel": { "type": "string", "nullable": true, "example": "Robot Account 02" },
+          "machineName": { "type": "string", "nullable": true },
+          "machineIp": { "type": "string", "nullable": true },
+          "anydeskId": { "type": "string", "nullable": true },
+          "anydeskAlias": { "type": "string", "nullable": true },
+          "maxExpectedRunMinutes": { "type": "integer", "minimum": 1, "example": 30 },
+          "isActive": { "type": "boolean" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "RobotRun": {
+        "type": "object",
+        "required": ["robotRunId", "robotId", "status", "startedAt", "retryCount", "createdAt", "updatedAt"],
+        "properties": {
+          "robotRunId": { "type": "string", "format": "uuid" },
+          "robotId": { "type": "string", "format": "uuid" },
+          "status": { "$ref": "#/components/schemas/RunStatus" },
+          "startedAt": { "type": "string", "format": "date-time" },
+          "endedAt": { "type": "string", "format": "date-time", "nullable": true },
+          "durationSeconds": { "type": "integer", "nullable": true, "minimum": 0 },
+          "cloudFlowRunId": { "type": "string", "nullable": true },
+          "desktopFlowSessionId": { "type": "string", "nullable": true },
+          "machineName": { "type": "string", "nullable": true },
+          "errorCode": { "type": "string", "nullable": true },
+          "errorMessage": { "type": "string", "nullable": true },
+          "errorStep": { "type": "string", "nullable": true },
+          "retryCount": { "type": "integer", "minimum": 0 },
+          "retryOfRunId": { "type": "string", "format": "uuid", "nullable": true },
+          "inputReference": { "type": "string", "nullable": true },
+          "metadata": { "type": "object", "nullable": true, "additionalProperties": true },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "RunEvent": {
+        "type": "object",
+        "required": ["runEventId", "robotRunId", "eventType", "createdAt"],
+        "properties": {
+          "runEventId": { "type": "string", "format": "uuid" },
+          "robotRunId": { "type": "string", "format": "uuid" },
+          "eventType": { "$ref": "#/components/schemas/EventType" },
+          "stepName": { "type": "string", "nullable": true },
+          "message": { "type": "string", "nullable": true },
+          "eventData": { "type": "object", "nullable": true, "additionalProperties": true },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": ["ok", "database", "databaseTime", "generatedAt"],
+        "properties": {
+          "ok": { "type": "boolean", "example": true },
+          "database": { "type": "string", "example": "rpa_monitoring" },
+          "databaseTime": { "type": "string", "format": "date-time" },
+          "generatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "DashboardResponse": {
+        "type": "object",
+        "required": ["generatedAt", "robots", "robotRuns", "runEvents"],
+        "properties": {
+          "generatedAt": { "type": "string", "format": "date-time" },
+          "robots": { "type": "array", "items": { "$ref": "#/components/schemas/Robot" } },
+          "robotRuns": { "type": "array", "items": { "$ref": "#/components/schemas/RobotRun" } },
+          "runEvents": { "type": "array", "items": { "$ref": "#/components/schemas/RunEvent" } }
+        }
+      },
+      "RobotUpsertRequest": {
+        "type": "object",
+        "required": ["robotCode", "robotName", "powerAutomateEnvironmentId", "machineName"],
+        "properties": {
+          "robotCode": { "type": "string", "maxLength": 100 },
+          "robotName": { "type": "string", "maxLength": 255 },
+          "robotType": { "$ref": "#/components/schemas/RobotType" },
+          "powerAutomateEnvironmentId": { "type": "string", "maxLength": 200 },
+          "cloudFlowId": { "type": "string", "maxLength": 200 },
+          "cloudFlowName": { "type": "string", "maxLength": 255 },
+          "cloudTriggerName": { "type": "string", "maxLength": 150 },
+          "desktopFlowId": { "type": "string", "maxLength": 200 },
+          "desktopFlowName": { "type": "string", "maxLength": 255 },
+          "powerAutomateUrl": { "type": "string", "format": "uri" },
+          "accountLabel": { "type": "string", "maxLength": 150 },
+          "machineName": { "type": "string", "maxLength": 150 },
+          "machineIp": { "type": "string", "maxLength": 100 },
+          "anydeskId": { "type": "string", "maxLength": 100 },
+          "anydeskAlias": { "type": "string", "maxLength": 200 },
+          "maxExpectedRunMinutes": { "type": "integer", "minimum": 1, "default": 60 },
+          "isActive": { "type": "boolean", "default": true }
+        }
+      },
+      "LoggerStartRequest": {
+        "type": "object",
+        "required": ["robotId"],
+        "properties": {
+          "robotId": { "type": "string", "format": "uuid" },
+          "robotRunId": { "type": "string", "format": "uuid" },
+          "startedAt": { "type": "string", "format": "date-time" },
+          "cloudFlowRunId": { "type": "string" },
+          "desktopFlowSessionId": { "type": "string" },
+          "machineName": { "type": "string" },
+          "retryCount": { "type": "integer", "minimum": 0, "default": 0 },
+          "retryOfRunId": { "type": "string", "format": "uuid" },
+          "inputReference": { "type": "string" },
+          "metadata": { "type": "object", "additionalProperties": true },
+          "stepName": { "type": "string" },
+          "message": { "type": "string" },
+          "eventData": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "LoggerSuccessRequest": {
+        "type": "object",
+        "required": ["robotRunId"],
+        "properties": {
+          "robotRunId": { "type": "string", "format": "uuid" },
+          "endedAt": { "type": "string", "format": "date-time" },
+          "stepName": { "type": "string" },
+          "message": { "type": "string" },
+          "eventData": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "LoggerFailedRequest": {
+        "type": "object",
+        "required": ["robotRunId", "errorMessage"],
+        "properties": {
+          "robotRunId": { "type": "string", "format": "uuid" },
+          "endedAt": { "type": "string", "format": "date-time" },
+          "errorCode": { "type": "string" },
+          "errorMessage": { "type": "string" },
+          "errorStep": { "type": "string" },
+          "eventData": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "RunEventCreateRequest": {
+        "type": "object",
+        "required": ["robotRunId", "eventType", "message"],
+        "properties": {
+          "robotRunId": { "type": "string", "format": "uuid" },
+          "eventType": { "$ref": "#/components/schemas/EventType" },
+          "stepName": { "type": "string" },
+          "message": { "type": "string" },
+          "eventData": { "type": "object", "additionalProperties": true },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "RunStatusUpdateRequest": {
+        "type": "object",
+        "required": ["robotRunId", "status"],
+        "properties": {
+          "robotRunId": { "type": "string", "format": "uuid" },
+          "status": { "$ref": "#/components/schemas/RunStatus" },
+          "endedAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "errorCode": { "type": "string" },
+          "errorMessage": { "type": "string" },
+          "errorStep": { "type": "string" }
+        }
+      },
+      "RobotResponse": {
+        "type": "object",
+        "required": ["robot"],
+        "properties": { "robot": { "$ref": "#/components/schemas/Robot" } }
+      },
+      "RobotRunResponse": {
+        "type": "object",
+        "required": ["robotRun"],
+        "properties": { "robotRun": { "$ref": "#/components/schemas/RobotRun" } }
+      },
+      "RunEventResponse": {
+        "type": "object",
+        "required": ["runEvent"],
+        "properties": { "runEvent": { "$ref": "#/components/schemas/RunEvent" } }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": { "error": { "type": "string" } }
+      }
+    }
+  }
+}
