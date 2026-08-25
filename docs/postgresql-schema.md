@@ -11,10 +11,15 @@ rpa_robot
 
 rpa_app_user
   1:N rpa_user_session
+
+rpa_daily_run_counter
+  daily sequence used by rpa_robot_run.input_reference
 ```
 
 `rpa_environment` table intentionally does not exist.
 `power_automate_environment_id` and `account_name` are columns on `rpa_robot`.
+`rpa_daily_run_counter` atomically generates Ulaanbaatar-local references in
+`invoice-batch-YYYY-MM-DD-001` format and resets the visible sequence each day.
 
 ## Dashboard query
 

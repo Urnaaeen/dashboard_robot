@@ -110,6 +110,13 @@ CREATE TABLE IF NOT EXISTS rpa_robot_run (
     CONSTRAINT chk_duration_seconds CHECK (duration_seconds IS NULL OR duration_seconds >= 0)
 );
 
+CREATE TABLE IF NOT EXISTS rpa_daily_run_counter (
+    run_date DATE PRIMARY KEY,
+    last_value INTEGER NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_daily_run_counter_value CHECK (last_value > 0)
+);
+
 CREATE TABLE IF NOT EXISTS rpa_run_event (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     robot_run_id UUID NOT NULL REFERENCES rpa_robot_run(id) ON DELETE CASCADE,

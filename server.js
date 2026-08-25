@@ -121,6 +121,15 @@ function requireFields(payload, fields) {
   }
 }
 
+function requireRobotCode(payload) {
+  requireFields(payload, ["robotCode"]);
+  const robotCode = String(payload.robotCode).trim();
+  if (!robotCode) {
+    throw httpError("robotCode cannot be blank.", 400);
+  }
+  return robotCode;
+}
+
 function parseCookies(req) {
   const cookies = {};
   for (const part of String(req.headers.cookie || "").split(";")) {
@@ -404,8 +413,8 @@ async function handleApi(req, res, pathname, searchParams) {
     assertSameOrigin(req);
     await requireLoggerAccess(req);
     const payload = await parseBody(req);
-    requireFields(payload, ["robotId"]);
-    const robotRun = await database.startRobotRun(payload);
+    const robotCode = requireRobotCode(payload);
+    const robotRun = await database.startRobotRun({ ...payload, robotCode });
     sendJson(res, 201, { robotRun });
     return true;
   }
@@ -414,8 +423,8 @@ async function handleApi(req, res, pathname, searchParams) {
     assertSameOrigin(req);
     await requireLoggerAccess(req);
     const payload = await parseBody(req);
-    requireFields(payload, ["robotRunId"]);
-    const robotRun = await database.finishRobotRun(payload, "SUCCESS");
+    const robotCode = requireRobotCode(payload);
+    const robotRun = await database.finishRobotRun({ ...payload, robotCode }, "SUCCESS");
     sendJson(res, 200, { robotRun });
     return true;
   }
@@ -424,8 +433,9 @@ async function handleApi(req, res, pathname, searchParams) {
     assertSameOrigin(req);
     await requireLoggerAccess(req);
     const payload = await parseBody(req);
-    requireFields(payload, ["robotRunId", "errorMessage"]);
-    const robotRun = await database.finishRobotRun(payload, "FAILED");
+    requireFields(payload, ["errorMessage"]);
+    const robotCode = requireRobotCode(payload);
+    const robotRun = await database.finishRobotRun({ ...payload, robotCode }, "FAILED");
     sendJson(res, 200, { robotRun });
     return true;
   }

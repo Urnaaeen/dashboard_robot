@@ -152,11 +152,16 @@ Robot start:
 
 ```json
 {
-  "robotId": "00000000-0000-4000-8000-000000000001",
+  "robotCode": "RPA-000001",
   "machineName": "BOT-PC-02",
   "cloudFlowRunId": "flow-run-001"
 }
 ```
 
-START response-iin `robotRun.robotRunId`-g Power Automate flow dotor hadgalaad
-SUCCESS/FAILED endpoint-d damjuulna.
+Server `inputReference`-g Ulaanbaatar-iin odor bolon odor tutmiin daraalsan
+dugaaraar `invoice-batch-YYYY-MM-DD-001` helbereer avtomataar uusgene.
+
+SUCCESS/FAILED endpoint-d `robotCode`-g ilgeene. Neg robot deer olon RUNNING
+run baival START deer ashiglasan `cloudFlowRunId`-g bas ilgeej yag run-iig songono.
+START response-iin `robotRun.robotRunId` ni event bolon general status endpoint-d
+ashiglagdsaar baina.

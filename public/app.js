@@ -1128,35 +1128,42 @@ async function handleLoggerAction(action, robotId) {
   }
 
   try {
+    const robot = state.data.robots.find((item) => item.robotId === targetRobotId);
+    if (!robot?.robotCode) {
+      throw new Error("Robot code not found.");
+    }
+
     if (action === "logger-start") {
       await apiFetch("/api/logger/start", {
         method: "POST",
-        body: JSON.stringify({ robotId: targetRobotId }),
+        body: JSON.stringify({ robotCode: robot.robotCode }),
       });
       showToast("RUNNING record created.");
     }
 
     if (action === "logger-success") {
       const run = latestRunForRobot(targetRobotId);
-      if (!run) {
-        throw new Error("No run record found for this robot.");
-      }
       await apiFetch("/api/logger/success", {
         method: "POST",
-        body: JSON.stringify({ robotRunId: run.robotRunId }),
+        body: JSON.stringify({
+          robotCode: robot.robotCode,
+          ...(run?.status === "RUNNING" && run.cloudFlowRunId
+            ? { cloudFlowRunId: run.cloudFlowRunId }
+            : {}),
+        }),
       });
       showToast("Run updated to SUCCESS.");
     }
 
     if (action === "logger-failed") {
       const run = latestRunForRobot(targetRobotId);
-      if (!run) {
-        throw new Error("No run record found for this robot.");
-      }
       await apiFetch("/api/logger/failed", {
         method: "POST",
         body: JSON.stringify({
-          robotRunId: run.robotRunId,
+          robotCode: robot.robotCode,
+          ...(run?.status === "RUNNING" && run.cloudFlowRunId
+            ? { cloudFlowRunId: run.cloudFlowRunId }
+            : {}),
           errorCode: state.logger.errorCode || "ERR_UNKNOWN",
           errorStep: state.logger.errorStep || "Unknown Step",
           errorMessage: state.logger.errorMessage || "Robot failed.",

@@ -456,15 +456,53 @@ async function createRobot(payload) {
   });
 }
 
+async function generateInputReference(client, startedAt) {
+  const result = await client.query(
+    `
+      WITH run_day AS (
+        SELECT (
+          COALESCE($1::timestamptz, NOW()) AT TIME ZONE 'Asia/Ulaanbaatar'
+        )::date AS value
+      ), next_counter AS (
+        INSERT INTO rpa_daily_run_counter (run_date, last_value)
+        SELECT
+          value,
+          COALESCE((
+            SELECT MAX(SUBSTRING(robot_run.input_reference FROM '([0-9]+)$')::integer)
+            FROM rpa_robot_run AS robot_run
+            WHERE robot_run.input_reference ~ (
+              '^invoice-batch-' || TO_CHAR(run_day.value, 'YYYY-MM-DD') || '-[0-9]+$'
+            )
+          ), 0) + 1
+        FROM run_day
+        ON CONFLICT (run_date) DO UPDATE
+        SET
+          last_value = rpa_daily_run_counter.last_value + 1,
+          updated_at = NOW()
+        RETURNING run_date, last_value
+      )
+      SELECT
+        'invoice-batch-' || TO_CHAR(run_date, 'YYYY-MM-DD') || '-' ||
+          LPAD(last_value::text, 3, '0') AS input_reference
+      FROM next_counter
+    `,
+    [nullable(startedAt)],
+  );
+  return result.rows[0].input_reference;
+}
+
 async function startRobotRun(payload) {
   return withTransaction(async (client) => {
-    const robotResult = await client.query("SELECT * FROM rpa_robot WHERE id = $1 AND is_active = TRUE", [
-      payload.robotId,
-    ]);
+    const robotCode = String(payload.robotCode || "").trim();
+    const robotResult = await client.query(
+      "SELECT * FROM rpa_robot WHERE robot_code = $1 AND is_active = TRUE",
+      [robotCode],
+    );
     if (!robotResult.rowCount) {
-      throw httpError(`Robot not found: ${payload.robotId}`, 404);
+      throw httpError(`Robot not found: ${robotCode}`, 404);
     }
     const robot = robotResult.rows[0];
+    const inputReference = await generateInputReference(client, payload.startedAt);
     const runResult = await client.query(
       `
         INSERT INTO rpa_robot_run (
@@ -481,7 +519,7 @@ async function startRobotRun(payload) {
       `,
       [
         nullable(payload.robotRunId),
-        payload.robotId,
+        robot.id,
         nullable(payload.startedAt),
         nullable(payload.cloudFlowRunId),
         nullable(payload.desktopFlowSessionId),
@@ -489,7 +527,7 @@ async function startRobotRun(payload) {
         robot.machine_name,
         Number(payload.retryCount || 0),
         nullable(payload.retryOfRunId),
-        nullable(payload.inputReference),
+        inputReference,
         jsonValue(payload.metadata),
       ],
     );
@@ -514,6 +552,36 @@ async function startRobotRun(payload) {
 async function finishRobotRun(payload, status) {
   return withTransaction(async (client) => {
     const isFailed = status === "FAILED";
+    const robotCode = String(payload.robotCode || "").trim();
+    const cloudFlowRunId = nullable(payload.cloudFlowRunId);
+    const runningResult = await client.query(
+      `
+        SELECT robot_run.*
+        FROM rpa_robot_run AS robot_run
+        JOIN rpa_robot AS robot ON robot.id = robot_run.robot_id
+        WHERE robot.robot_code = $1
+          AND robot_run.status = 'RUNNING'
+          AND ($2::text IS NULL OR robot_run.cloud_flow_run_id = $2)
+        ORDER BY robot_run.started_at DESC, robot_run.created_at DESC
+        LIMIT 2
+        FOR UPDATE OF robot_run
+      `,
+      [robotCode, cloudFlowRunId],
+    );
+    if (!runningResult.rowCount) {
+      const suffix = cloudFlowRunId ? ` with cloudFlowRunId ${cloudFlowRunId}` : "";
+      throw httpError(`RUNNING run not found for robotCode ${robotCode}${suffix}.`, 404);
+    }
+    if (runningResult.rowCount > 1) {
+      const message = cloudFlowRunId
+        ? `Multiple RUNNING runs use cloudFlowRunId ${cloudFlowRunId} for robotCode ${robotCode}.`
+        : `Multiple RUNNING runs found for robotCode ${robotCode}. Include cloudFlowRunId to identify the run.`;
+      throw httpError(
+        message,
+        409,
+      );
+    }
+    const targetRun = runningResult.rows[0];
     const result = await client.query(
       `
         UPDATE rpa_robot_run
@@ -531,7 +599,7 @@ async function finishRobotRun(payload, status) {
         RETURNING *
       `,
       [
-        payload.robotRunId,
+        targetRun.id,
         status,
         nullable(payload.endedAt),
         isFailed ? payload.errorCode || "ERR_UNKNOWN" : null,
@@ -540,7 +608,7 @@ async function finishRobotRun(payload, status) {
       ],
     );
     if (!result.rowCount) {
-      throw httpError(`Robot run not found: ${payload.robotRunId}`, 404);
+      throw httpError(`Robot run not found: ${targetRun.id}`, 404);
     }
 
     const run = result.rows[0];
