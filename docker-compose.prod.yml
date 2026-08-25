@@ -46,13 +46,13 @@ services:
       PGSSL: "false"
       NODE_ENV: production
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      TRUST_PROXY: ${TRUST_PROXY:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
       RPA_API_KEY: ${RPA_API_KEY:?Set RPA_API_KEY in .env}
       SEED_DATABASE: ${SEED_DATABASE:-false}
       NODE_OPTIONS: --max-old-space-size=192
-    ports:
-      - "${APP_PORT:-5173}:5173"
+    expose:
+      - "5173"
     healthcheck:
       test:
         - CMD
@@ -67,5 +67,27 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    mem_limit: 128m
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   rpa_monitoring_data:
+  caddy_data:
+  caddy_config:

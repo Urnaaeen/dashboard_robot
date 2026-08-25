@@ -201,10 +201,11 @@ heartbeat time bolon metadata-g shinechilne.
 
 ## Production Docker deployment
 
-`docker-compose.prod.yml` ni Node API/dashboard bolon PostgreSQL-iig tus tusad ni
-container bolgon ajilluulna. PostgreSQL port host ruu neegddeggui. Ehnii public IP
-test ni HTTP ashiglah tul `COOKIE_SECURE=false`; domain bolon HTTPS tohiruulsnii
-daraa `COOKIE_SECURE=true`, `TRUST_PROXY=true` bolgono.
+`docker-compose.prod.yml` ni Caddy, Node API/dashboard bolon PostgreSQL-iig tus
+tusad ni container bolgon ajilluulna. PostgreSQL bolon Node port host ruu
+neegddeggui. Caddy ni `APP_DOMAIN`-d TLS certificate avtomataar avch, HTTP-g HTTPS
+ruu redirect hiine. Oracle Security List bolon server firewall deer TCP 80, 443
+neelttei baina.
 
 Server deer repository-g clone hiisnii daraa:
 
@@ -212,8 +213,8 @@ Server deer repository-g clone hiisnii daraa:
 cp .env.example .env
 ```
 
-`.env` dotor dor hayaj `POSTGRES_PASSWORD`, `RPA_API_KEY`-g shine random utgaar
-solij, `.env` file-iin permission-iig hyazgaarlana:
+`.env` dotor `APP_DOMAIN`-g domain nereer, `POSTGRES_PASSWORD`, `RPA_API_KEY`-g
+shine random utgaar solij, `.env` file-iin permission-iig hyazgaarlana:
 
 ```bash
 chmod 600 .env
@@ -233,5 +234,5 @@ docker compose -f docker-compose.prod.yml exec app \
 Health check:
 
 ```bash
-curl http://127.0.0.1:5173/api/health
+curl https://rpa-monitoring.duckdns.org/api/health
 ```
