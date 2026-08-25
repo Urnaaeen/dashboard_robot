@@ -46,10 +46,31 @@ function mapRobot(row) {
     desktopFlowName: row.desktop_flow_name,
     powerAutomateUrl: row.power_automate_url,
     accountName: row.account_name,
+    machineId: row.machine_id,
     machineName: row.machine_name,
     machineIp: row.machine_ip,
     anydeskId: row.anydesk_id,
     maxExpectedRunMinutes: row.max_expected_run_minutes,
+    isActive: row.is_active,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapMachine(row) {
+  return {
+    machineId: row.id,
+    machineName: row.machine_name,
+    machineIp: row.machine_ip,
+    anydeskId: row.anydesk_id,
+    status: row.status || "NOT_CONNECTED",
+    lastHeartbeatAt: row.last_heartbeat_at,
+    heartbeatMetadata: row.heartbeat_metadata,
+    robotCount: Number(row.robot_count || 0),
+    runningRunCount: Number(row.running_run_count || 0),
+    robotNames: row.robot_names || [],
+    runningRobotNames: row.running_robot_names || [],
+    lastRunStartedAt: row.last_run_started_at,
     isActive: row.is_active,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -280,7 +301,7 @@ async function deleteUserSession(tokenHash) {
 }
 
 async function getDashboardData() {
-  const [robotResult, runResult] = await Promise.all([
+  const [robotResult, runResult, machines] = await Promise.all([
     pool.query(`
       SELECT *
       FROM rpa_robot
@@ -300,6 +321,7 @@ async function getDashboardData() {
       WHERE robot.is_active = TRUE
       ORDER BY latest_run.started_at DESC
     `),
+    getMachines(),
   ]);
 
   const runIds = runResult.rows.map((row) => row.id);
@@ -319,7 +341,103 @@ async function getDashboardData() {
     robots: robotResult.rows.map(mapRobot),
     robotRuns: runResult.rows.map(mapRobotRun),
     runEvents: eventResult.rows.map(mapRunEvent),
+    machines,
   };
+}
+
+async function getMachines() {
+  const result = await pool.query(`
+    WITH robot_summary AS (
+      SELECT
+        machine_id,
+        COUNT(*) AS robot_count,
+        ARRAY_AGG(robot_name ORDER BY robot_name) AS robot_names
+      FROM rpa_robot
+      WHERE is_active = TRUE
+        AND machine_id IS NOT NULL
+      GROUP BY machine_id
+    ), running_summary AS (
+      SELECT
+        robot.machine_id,
+        COUNT(*) AS running_run_count,
+        ARRAY_AGG(DISTINCT robot.robot_name ORDER BY robot.robot_name) AS running_robot_names,
+        MAX(robot_run.started_at) AS last_run_started_at
+      FROM rpa_robot_run AS robot_run
+      JOIN rpa_robot AS robot ON robot.id = robot_run.robot_id
+      WHERE robot_run.status = 'RUNNING'
+        AND robot.is_active = TRUE
+        AND robot.machine_id IS NOT NULL
+      GROUP BY robot.machine_id
+    )
+    SELECT
+      machine.*,
+      COALESCE(robot_summary.robot_count, 0) AS robot_count,
+      COALESCE(robot_summary.robot_names, ARRAY[]::text[]) AS robot_names,
+      COALESCE(running_summary.running_run_count, 0) AS running_run_count,
+      COALESCE(running_summary.running_robot_names, ARRAY[]::text[]) AS running_robot_names,
+      running_summary.last_run_started_at,
+      CASE
+        WHEN COALESCE(running_summary.running_run_count, 0) > 0 THEN 'RUNNING'
+        WHEN machine.last_heartbeat_at IS NULL THEN 'NOT_CONNECTED'
+        WHEN machine.last_heartbeat_at >= NOW() - INTERVAL '3 minutes' THEN 'IDLE'
+        ELSE 'OFFLINE'
+      END AS status
+    FROM rpa_machine AS machine
+    LEFT JOIN robot_summary ON robot_summary.machine_id = machine.id
+    LEFT JOIN running_summary ON running_summary.machine_id = machine.id
+    WHERE machine.is_active = TRUE
+    ORDER BY
+      CASE
+        WHEN COALESCE(running_summary.running_run_count, 0) > 0 THEN 1
+        WHEN machine.last_heartbeat_at >= NOW() - INTERVAL '3 minutes' THEN 2
+        WHEN machine.last_heartbeat_at IS NOT NULL THEN 3
+        ELSE 4
+      END,
+      machine.machine_name
+  `);
+  return result.rows.map(mapMachine);
+}
+
+async function upsertMachine(executor, payload, { heartbeat = false } = {}) {
+  const machineName = String(payload.machineName || "").trim();
+  if (!machineName) {
+    throw httpError("machineName cannot be blank.", 400);
+  }
+  const result = await executor.query(
+    `
+      INSERT INTO rpa_machine (
+        machine_name, machine_ip, anydesk_id, last_heartbeat_at, heartbeat_metadata
+      )
+      VALUES ($1, $2, $3, CASE WHEN $4 THEN NOW() ELSE NULL END, $5::jsonb)
+      ON CONFLICT (machine_name) DO UPDATE SET
+        machine_ip = COALESCE(EXCLUDED.machine_ip, rpa_machine.machine_ip),
+        anydesk_id = COALESCE(EXCLUDED.anydesk_id, rpa_machine.anydesk_id),
+        last_heartbeat_at = CASE
+          WHEN $4 THEN NOW()
+          ELSE rpa_machine.last_heartbeat_at
+        END,
+        heartbeat_metadata = CASE
+          WHEN $4 THEN EXCLUDED.heartbeat_metadata
+          ELSE rpa_machine.heartbeat_metadata
+        END,
+        is_active = TRUE
+      RETURNING *
+    `,
+    [
+      machineName,
+      nullable(payload.machineIp),
+      nullable(payload.anydeskId),
+      heartbeat,
+      jsonValue(payload.metadata),
+    ],
+  );
+  return result.rows[0];
+}
+
+async function recordMachineHeartbeat(payload) {
+  const row = await upsertMachine(pool, payload, { heartbeat: true });
+  const machines = await getMachines();
+  return machines.find((machine) => machine.machineId === row.id) || mapMachine(row);
 }
 
 async function getRunHistory({ search, status, startedFrom, startedTo, limit }) {
@@ -392,6 +510,7 @@ function buildPowerAutomateUrl(payload) {
 }
 
 async function saveRobot(executor, payload, robotCode) {
+  const machine = await upsertMachine(executor, payload);
   const values = [
     robotCode,
     String(payload.robotName || "").trim(),
@@ -404,6 +523,7 @@ async function saveRobot(executor, payload, robotCode) {
     nullable(payload.desktopFlowName),
     buildPowerAutomateUrl(payload),
     nullable(payload.accountName ?? payload.accountLabel),
+    machine.id,
     nullable(payload.machineName),
     nullable(payload.machineIp),
     nullable(payload.anydeskId),
@@ -418,11 +538,11 @@ async function saveRobot(executor, payload, robotCode) {
           robot_code, robot_name, robot_type, power_automate_environment_id,
           cloud_flow_id, cloud_flow_name, cloud_trigger_name, desktop_flow_id,
           desktop_flow_name, power_automate_url, account_name, machine_name,
-          machine_ip, anydesk_id, max_expected_run_minutes, is_active
+          machine_ip, anydesk_id, max_expected_run_minutes, is_active, machine_id
         )
         VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9,
-          $10, $11, $12, $13, $14, $15, $16
+          $10, $11, $13, $14, $15, $16, $17, $12
         )
         RETURNING *
       `,
@@ -715,10 +835,12 @@ module.exports = {
   findUserByUsername,
   finishRobotRun,
   getDashboardData,
+  getMachines,
   getRunHistory,
   getUserBySessionTokenHash,
   initializeSchema,
   ping,
+  recordMachineHeartbeat,
   seedSampleData,
   startRobotRun,
   translateDatabaseError,

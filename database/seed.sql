@@ -1,3 +1,17 @@
+INSERT INTO rpa_machine (
+    machine_name,
+    machine_ip,
+    anydesk_id
+)
+VALUES (
+    'BOT-PC-02',
+    '10.0.0.22',
+    '123 456 789'
+)
+ON CONFLICT (machine_name) DO UPDATE SET
+    machine_ip = COALESCE(rpa_machine.machine_ip, EXCLUDED.machine_ip),
+    anydesk_id = COALESCE(rpa_machine.anydesk_id, EXCLUDED.anydesk_id);
+
 INSERT INTO rpa_robot (
     id,
     robot_code,
@@ -10,6 +24,7 @@ INSERT INTO rpa_robot (
     desktop_flow_name,
     power_automate_url,
     account_name,
+    machine_id,
     machine_name,
     machine_ip,
     anydesk_id,
@@ -27,6 +42,7 @@ VALUES (
     'ITZONE Receipt PAD',
     'https://make.powerautomate.com/manage/environments/Default-xxxxxxxx/uiflows/desktop-flow-itzone-receipt/details',
     'Robot Account 02',
+    (SELECT id FROM rpa_machine WHERE machine_name = 'BOT-PC-02'),
     'BOT-PC-02',
     '10.0.0.22',
     '123 456 789',

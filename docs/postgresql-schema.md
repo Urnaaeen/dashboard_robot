@@ -4,6 +4,7 @@
 
 ```text
 rpa_robot
+  N:1 rpa_machine
   1:N rpa_robot_run
        1:N rpa_run_event
        1:N rpa_control_action
@@ -14,12 +15,22 @@ rpa_app_user
 
 rpa_daily_run_counter
   daily sequence used by rpa_robot_run.input_reference
+
+rpa_machine
+  heartbeat-based RUNNING / IDLE / OFFLINE / NOT_CONNECTED availability
 ```
 
 `rpa_environment` table intentionally does not exist.
 `power_automate_environment_id` and `account_name` are columns on `rpa_robot`.
 `rpa_daily_run_counter` atomically generates Ulaanbaatar-local references in
 `invoice-batch-YYYY-MM-DD-001` format and resets the visible sequence each day.
+
+`rpa_machine.last_heartbeat_at`-g machine agent 1 minut tutam shinechilne. API
+active `rpa_robot_run` baival `RUNNING`, ugui bol heartbeat 3 minutaas shine ued
+`IDLE`, umnu heartbeat irj baisan ch tasarsan bol `OFFLINE`, heartbeat ogt irj
+baigaagui bol `NOT_CONNECTED` gej tootsoolno. `rpa_robot.machine_id` ni machine
+master record ruu holbogdono; huuchin machine text columns ni run snapshot bolon
+backward compatibility-d hadgalagdana.
 
 ## Dashboard query
 

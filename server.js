@@ -10,7 +10,9 @@ const SESSION_COOKIE_NAME = "rpa_session";
 const SESSION_TTL_HOURS = Number(process.env.SESSION_TTL_HOURS || 12);
 const SESSION_TTL_SECONDS = Math.round(SESSION_TTL_HOURS * 60 * 60);
 const COOKIE_SECURE =
-  process.env.COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
+  process.env.COOKIE_SECURE === undefined
+    ? process.env.NODE_ENV === "production"
+    : process.env.COOKIE_SECURE === "true";
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 5;
 const loginFailures = new Map();
@@ -392,6 +394,39 @@ async function handleApi(req, res, pathname, searchParams) {
       limit: searchParams.get("limit") || 200,
     });
     sendJson(res, 200, { generatedAt: nowIso(), ...history });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/machines") {
+    await requireSession(req);
+    const machines = await database.getMachines();
+    sendJson(res, 200, { generatedAt: nowIso(), machines });
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/machines/heartbeat") {
+    assertSameOrigin(req);
+    await requireLoggerAccess(req);
+    const payload = await parseBody(req);
+    requireFields(payload, ["machineName"]);
+    const machineName = String(payload.machineName).trim();
+    if (!machineName || machineName.length > 150) {
+      throw httpError("machineName must be between 1 and 150 characters.", 400);
+    }
+    if (payload.machineIp != null && String(payload.machineIp).trim().length > 100) {
+      throw httpError("machineIp cannot exceed 100 characters.", 400);
+    }
+    if (payload.anydeskId != null && String(payload.anydeskId).trim().length > 100) {
+      throw httpError("anydeskId cannot exceed 100 characters.", 400);
+    }
+    if (
+      payload.metadata != null &&
+      (typeof payload.metadata !== "object" || Array.isArray(payload.metadata))
+    ) {
+      throw httpError("metadata must be a JSON object.", 400);
+    }
+    const machine = await database.recordMachineHeartbeat({ ...payload, machineName });
+    sendJson(res, 200, { machine });
     return true;
   }
 

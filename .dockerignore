@@ -1,0 +1,17 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+node_modules
+npm-debug.log*
+coverage
+.dist
+data
+*.log
+*.pid
+pgadmin-*.json
+.vscode
+.idea
+Thumbs.db
+desktop.ini

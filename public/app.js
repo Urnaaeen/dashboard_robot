@@ -30,6 +30,9 @@ function routeFromLocation() {
   if (segments[0] === "robots") {
     return { view: "robots", robotCode: "" };
   }
+  if (segments[0] === "machines") {
+    return { view: "machines", robotCode: "" };
+  }
   if (segments[0] === "history") {
     return { view: "history", robotCode: "" };
   }
@@ -60,6 +63,7 @@ const state = {
     robots: [],
     robotRuns: [],
     runEvents: [],
+    machines: [],
   },
   history: {
     runs: [],
@@ -79,6 +83,10 @@ const state = {
     machine: "ALL",
     robot: "",
     date: "",
+  },
+  machineFilters: {
+    search: "",
+    status: "ALL",
   },
   logger: {
     robotId: "",
@@ -105,6 +113,9 @@ const statusMeta = {
   TIMEOUT: { label: "Timeout", className: "status-timeout" },
   UNKNOWN: { label: "Unknown", className: "status-unknown" },
   STALE_RUNNING: { label: "Stale Running", className: "status-stale_running" },
+  IDLE: { label: "Idle", className: "status-idle" },
+  OFFLINE: { label: "Offline", className: "status-offline" },
+  NOT_CONNECTED: { label: "Not Connected", className: "status-not_connected" },
 };
 
 const icons = {
@@ -116,6 +127,7 @@ const icons = {
   play: '<svg viewBox="0 0 24 24" focusable="false"><path d="M8 5v14l11-7-11-7Z"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" focusable="false"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v6h-6"/></svg>',
   robot: '<svg viewBox="0 0 24 24" focusable="false"><path d="M12 8V4m-5 8h10M7 16h10M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z"/><path d="M9 12h.01M15 12h.01"/></svg>',
+  machine: '<svg viewBox="0 0 24 24" focusable="false"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
   x: '<svg viewBox="0 0 24 24" focusable="false"><path d="M18 6 6 18M6 6l12 12"/></svg>',
 };
 
@@ -158,6 +170,9 @@ function pathForView(view) {
   }
   if (view === "history") {
     return "/history";
+  }
+  if (view === "machines") {
+    return "/machines";
   }
   return "/";
 }
@@ -291,6 +306,7 @@ async function loadData({ silent = false } = {}) {
       robots: payload.robots || [],
       robotRuns: payload.robotRuns || [],
       runEvents: payload.runEvents || [],
+      machines: payload.machines || [],
     };
     state.lastUpdated = new Date(payload.generatedAt || Date.now());
     syncRobotSelectionFromRoute({ canonicalize: true });
@@ -515,6 +531,10 @@ function render() {
     app.innerHTML = renderHistoryView();
     return;
   }
+  if (state.view === "machines") {
+    app.innerHTML = renderMachinesView();
+    return;
+  }
   if (state.view === "detail") {
     app.innerHTML = renderDetailView();
     return;
@@ -527,6 +547,7 @@ function updateChrome() {
   const titles = {
     overview: ["RPA Monitoring", "Latest robot run status from PostgreSQL."],
     robots: ["Robots", "Master robot inventory with last run status."],
+    machines: ["Machines", "Live machine availability and robot workload."],
     detail: [selectedRobot?.robotName || "Robot Detail", "Robot master data and latest run information."],
     history: ["Run History", "Robot execution records from PostgreSQL."],
   };
@@ -593,6 +614,131 @@ function renderRobotsView() {
         ${renderRobotTable(filtered, { inventory: true })}
       </section>
     </div>
+  `;
+}
+
+function filteredMachines() {
+  const query = state.machineFilters.search.trim().toLowerCase();
+  return state.data.machines.filter((machine) => {
+    if (state.machineFilters.status !== "ALL" && machine.status !== state.machineFilters.status) {
+      return false;
+    }
+    if (!query) {
+      return true;
+    }
+    return [
+      machine.machineName,
+      machine.machineIp,
+      machine.anydeskId,
+      ...(machine.robotNames || []),
+      ...(machine.runningRobotNames || []),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .includes(query);
+  });
+}
+
+function renderMachinesView() {
+  const machines = filteredMachines();
+  const metrics = {
+    total: machines.length,
+    running: machines.filter((machine) => machine.status === "RUNNING").length,
+    idle: machines.filter((machine) => machine.status === "IDLE").length,
+    offline: machines.filter((machine) => machine.status === "OFFLINE").length,
+    notConnected: machines.filter((machine) => machine.status === "NOT_CONNECTED").length,
+  };
+  return `
+    <div class="dashboard-stack">
+      <section class="kpi-grid machine-kpi-grid" aria-label="Machine KPI">
+        ${renderKpi("Machines", metrics.total, "Active machine records", "status-unknown")}
+        ${renderKpi("Running", metrics.running, "At least one active robot run", "status-running")}
+        ${renderKpi("Idle", metrics.idle, "Heartbeat received, no active run", "status-idle")}
+        ${renderKpi("Offline", metrics.offline, "Heartbeat stopped for more than 3 minutes", "status-offline")}
+        ${renderKpi("Not Connected", metrics.notConnected, "Heartbeat agent has not reported yet", "status-not_connected")}
+      </section>
+      ${renderMachineFilters()}
+      <section class="data-panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Machine Status</h2>
+            <p>${machines.length} machine records</p>
+          </div>
+          <button class="secondary-button" type="button" data-action="refresh">${icons.refresh}<span>Refresh</span></button>
+        </div>
+        ${renderMachineTable(machines)}
+      </section>
+    </div>
+  `;
+}
+
+function renderMachineFilters() {
+  return `
+    <section class="filter-band" aria-label="Machine filters">
+      <div class="machine-filter-grid">
+        <div class="field">
+          <label for="machineSearch">Search</label>
+          <input id="machineSearch" data-machine-filter="search" type="search" value="${escapeHtml(state.machineFilters.search)}" placeholder="Machine, IP, AnyDesk ID, robot" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="machineStatus">Status</label>
+          <select id="machineStatus" data-machine-filter="status">
+            <option value="ALL">All statuses</option>
+            ${["RUNNING", "IDLE", "OFFLINE", "NOT_CONNECTED"].map((status) => `<option value="${status}" ${selected(status, state.machineFilters.status)}>${statusMeta[status].label}</option>`).join("")}
+          </select>
+        </div>
+        <button class="ghost-button" type="button" data-action="clear-machine-filters">${icons.filter}<span>Clear</span></button>
+      </div>
+    </section>
+  `;
+}
+
+function renderMachineTable(machines) {
+  if (!machines.length) {
+    return renderEmptyState("No machines found.", "Change the filters or send a machine heartbeat.");
+  }
+  return `
+    <div class="table-wrap">
+      <table class="machine-table">
+        <thead>
+          <tr>
+            <th>Machine</th>
+            <th>Status</th>
+            <th>Robots</th>
+            <th>Running Robot</th>
+            <th>Last Heartbeat</th>
+            <th>AnyDesk ID</th>
+          </tr>
+        </thead>
+        <tbody>${machines.map(renderMachineRow).join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderMachineRow(machine) {
+  const robotNames = (machine.robotNames || []).join(", ") || "No robots assigned";
+  const runningNames = (machine.runningRobotNames || []).join(", ") || "-";
+  return `
+    <tr>
+      <td>
+        <div class="robot-name">
+          <strong>${escapeHtml(machine.machineName)}</strong>
+          <span>${escapeHtml(machine.machineIp || "No IP address")}</span>
+        </div>
+      </td>
+      <td>${renderStatusBadge(machine.status)}</td>
+      <td>
+        <div class="robot-name">
+          <strong>${Number(machine.robotCount || 0).toLocaleString()}</strong>
+          <span title="${escapeHtml(robotNames)}">${escapeHtml(robotNames)}</span>
+        </div>
+      </td>
+      <td class="truncate" title="${escapeHtml(runningNames)}">${escapeHtml(runningNames)}</td>
+      <td>${formatDateTime(machine.lastHeartbeatAt)}</td>
+      <td>${escapeHtml(machine.anydeskId || "-")}</td>
+    </tr>
   `;
 }
 
@@ -1393,6 +1539,12 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
+    if (action === "clear-machine-filters") {
+      state.machineFilters = { search: "", status: "ALL" };
+      render();
+      return;
+    }
+
     if (action === "add-robot-open") {
       setAddRobotModal(true);
       return;
@@ -1477,6 +1629,13 @@ document.addEventListener("change", (event) => {
     return;
   }
 
+  const machineFilter = event.target.closest("[data-machine-filter]");
+  if (machineFilter) {
+    state.machineFilters[machineFilter.dataset.machineFilter] = machineFilter.value;
+    render();
+    return;
+  }
+
   const filter = event.target.closest("[data-filter]");
   if (filter) {
     state.filters[filter.dataset.filter] = filter.value;
@@ -1513,6 +1672,14 @@ document.addEventListener("input", (event) => {
     state.history.debounceTimer = window.setTimeout(() => {
       loadHistory({ silent: true });
     }, 400);
+    return;
+  }
+
+  const machineFilter = event.target.closest('[data-machine-filter="search"]');
+  if (machineFilter) {
+    state.machineFilters.search = machineFilter.value;
+    render();
+    document.querySelector('[data-machine-filter="search"]')?.focus();
     return;
   }
 

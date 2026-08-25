@@ -2,8 +2,8 @@
 
 PostgreSQL deer ajilladag RPA robot inventory bolon latest run monitoring dashboard.
 
-`rpa_environment` table baihgui. Power Automate Environment ID, account name,
-machine, AnyDesk medeelel bugd `rpa_robot` table deer hadgalagdana.
+`rpa_environment` table baihgui. Power Automate Environment ID bolon account name
+`rpa_robot` deer, machine heartbeat bolon availability ni `rpa_machine` deer hadgalagdana.
 
 Password, AnyDesk password, Power Automate account password hadgalah column esvel
 API field baihgui.
@@ -101,6 +101,7 @@ Jishee configuration-g [.env.example](.env.example)-ees harna uu.
 ## Database schema
 
 - `rpa_robot`: robot identity, Power Automate IDs, account name, machine, AnyDesk, monitoring config
+- `rpa_machine`: machine identity, IP, AnyDesk ID, last heartbeat, agent metadata
 - `rpa_robot_run`: status, start/end, duration, run IDs, error, retry, metadata
 - `rpa_run_event`: run detail events
 - `rpa_control_action`: future Retry, Resubmit, Run Now, Cancel actions
@@ -120,6 +121,8 @@ POST /api/auth/logout
 GET  /api/auth/me
 GET  /api/dashboard
 GET  /api/history
+GET  /api/machines
+POST /api/machines/heartbeat
 POST /api/robots
 POST /api/logger/start
 POST /api/logger/success
@@ -165,3 +168,70 @@ SUCCESS/FAILED endpoint-d `robotCode`-g ilgeene. Neg robot deer olon RUNNING
 run baival START deer ashiglasan `cloudFlowRunId`-g bas ilgeej yag run-iig songono.
 START response-iin `robotRun.robotRunId` ni event bolon general status endpoint-d
 ashiglagdsaar baina.
+
+## Machine heartbeat
+
+`Machines` delgets deer status daraah baidlaar tootsoologdono:
+
+- `RUNNING`: machine-d holbootoi robot deer RUNNING run baina
+- `IDLE`: suuliin 3 minutad heartbeat irsen, RUNNING run baihgui
+- `OFFLINE`: umnu heartbeat irj baisan ch suuliin heartbeat 3 minutaas huuchin
+- `NOT_CONNECTED`: heartbeat agent neg ch udaa medeelel ilgeegeegui
+
+Neg udaagiin heartbeat test:
+
+```powershell
+$env:RPA_API_KEY="YOUR_32_CHARACTER_OR_LONGER_SECRET"
+.\scripts\send-machine-heartbeat.ps1 -ApiBaseUrl "http://localhost:5173"
+```
+
+Machine buriin PowerShell-iig Administrator-aar neegeed scheduled task suulgana:
+
+```powershell
+.\scripts\install-machine-heartbeat-task.ps1 `
+  -ApiBaseUrl "https://rpa.example.com" `
+  -ApiKey "YOUR_32_CHARACTER_OR_LONGER_SECRET"
+```
+
+Installer ni heartbeat script-iig `C:\ProgramData\RpaMonitoring` ruu huulj, API
+key-g machine environment variable-d hadgalaad Windows Task Scheduler-aar 1 minut
+tutam ajilluulna. API key script esvel task argument dotor hadgalagdahgui.
+Heartbeat endpoint ni ug machine baihgui bol uusgene, bgaa bol IP, AnyDesk ID,
+heartbeat time bolon metadata-g shinechilne.
+
+## Production Docker deployment
+
+`docker-compose.prod.yml` ni Node API/dashboard bolon PostgreSQL-iig tus tusad ni
+container bolgon ajilluulna. PostgreSQL port host ruu neegddeggui. Ehnii public IP
+test ni HTTP ashiglah tul `COOKIE_SECURE=false`; domain bolon HTTPS tohiruulsnii
+daraa `COOKIE_SECURE=true`, `TRUST_PROXY=true` bolgono.
+
+Server deer repository-g clone hiisnii daraa:
+
+```bash
+cp .env.example .env
+```
+
+`.env` dotor dor hayaj `POSTGRES_PASSWORD`, `RPA_API_KEY`-g shine random utgaar
+solij, `.env` file-iin permission-iig hyazgaarlana:
+
+```bash
+chmod 600 .env
+docker compose -f docker-compose.prod.yml config --quiet
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml ps
+```
+
+App startup deer schema-g idempotent baidlaar initialize hiine. Anhnii admin
+hereglegchiig interactive nuuts ugtei uusgene:
+
+```bash
+docker compose -f docker-compose.prod.yml exec app \
+  npm run user:create -- --username admin --display-name "Dashboard Admin" --role ADMIN
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:5173/api/health
+```

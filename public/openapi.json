@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "RPA Central Monitoring API",
-    "version": "3.0.0",
-    "description": "Authenticated PostgreSQL-backed API for robot inventory, latest run monitoring, and Power Automate logging. Dashboard users are provisioned directly in the database; public registration is not available."
+    "version": "3.1.0",
+    "description": "Authenticated PostgreSQL-backed API for robot inventory, machine heartbeat monitoring, latest runs, and Power Automate logging. Dashboard users are provisioned directly in the database; public registration is not available."
   },
   "servers": [
     {
@@ -17,6 +17,7 @@
     { "name": "Dashboard", "description": "Monitoring dashboard data" },
     { "name": "History", "description": "Searchable robot run history" },
     { "name": "Robots", "description": "Robot master inventory" },
+    { "name": "Machines", "description": "Machine heartbeat and live availability" },
     { "name": "Logging", "description": "Power Automate run logging" }
   ],
   "paths": {
@@ -109,8 +110,8 @@
     "/api/dashboard": {
       "get": {
         "tags": ["Dashboard"],
-        "summary": "Get active robots and their latest runs",
-        "description": "Returns active rpa_robot rows, the latest rpa_robot_run for each robot, and events for those runs.",
+        "summary": "Get active robots, machines, and latest runs",
+        "description": "Returns active rpa_robot and rpa_machine rows, the latest rpa_robot_run for each robot, and events for those runs.",
         "operationId": "getDashboard",
         "responses": {
           "200": {
@@ -218,6 +219,66 @@
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "409": { "$ref": "#/components/responses/Conflict" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/machines": {
+      "get": {
+        "tags": ["Machines"],
+        "summary": "List machines with calculated availability",
+        "description": "RUNNING means an assigned robot has an active run. IDLE means a heartbeat arrived within 3 minutes and no run is active. OFFLINE means a previously connected heartbeat has expired. NOT_CONNECTED means the heartbeat agent has never reported.",
+        "operationId": "getMachines",
+        "responses": {
+          "200": {
+            "description": "Machine status list",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MachineListResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/machines/heartbeat": {
+      "post": {
+        "tags": ["Machines"],
+        "summary": "Record a machine heartbeat",
+        "description": "Creates the machine when needed and refreshes its IP, AnyDesk ID, metadata, and server-side heartbeat timestamp.",
+        "operationId": "recordMachineHeartbeat",
+        "security": [{ "cookieAuth": [] }, { "apiKeyAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MachineHeartbeatRequest" },
+              "example": {
+                "machineName": "BOT-PC-02",
+                "machineIp": "10.0.0.22",
+                "anydeskId": "123 456 789",
+                "metadata": {
+                  "os": "Microsoft Windows NT 10.0.26100.0",
+                  "agent": "powershell-heartbeat"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Heartbeat recorded",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MachineResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
           "500": { "$ref": "#/components/responses/ServerError" }
         }
       }
@@ -506,6 +567,10 @@
         "type": "string",
         "enum": ["QUEUED", "RUNNING", "SUCCESS", "FAILED", "CANCELLED", "TIMEOUT", "UNKNOWN"]
       },
+      "MachineStatus": {
+        "type": "string",
+        "enum": ["RUNNING", "IDLE", "OFFLINE", "NOT_CONNECTED"]
+      },
       "EventType": {
         "type": "string",
         "enum": ["INFO", "WARNING", "ERROR"]
@@ -529,10 +594,35 @@
           "desktopFlowName": { "type": "string", "nullable": true },
           "powerAutomateUrl": { "type": "string", "format": "uri", "nullable": true },
           "accountName": { "type": "string", "nullable": true, "example": "Robot Account 02" },
+          "machineId": { "type": "string", "format": "uuid", "nullable": true },
           "machineName": { "type": "string", "nullable": true },
           "machineIp": { "type": "string", "nullable": true },
           "anydeskId": { "type": "string", "nullable": true },
           "maxExpectedRunMinutes": { "type": "integer", "minimum": 1, "example": 30 },
+          "isActive": { "type": "boolean" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Machine": {
+        "type": "object",
+        "required": [
+          "machineId", "machineName", "status", "robotCount", "runningRunCount",
+          "robotNames", "runningRobotNames", "isActive", "createdAt", "updatedAt"
+        ],
+        "properties": {
+          "machineId": { "type": "string", "format": "uuid" },
+          "machineName": { "type": "string", "maxLength": 150, "example": "BOT-PC-02" },
+          "machineIp": { "type": "string", "nullable": true, "example": "10.0.0.22" },
+          "anydeskId": { "type": "string", "nullable": true, "example": "123 456 789" },
+          "status": { "$ref": "#/components/schemas/MachineStatus" },
+          "lastHeartbeatAt": { "type": "string", "format": "date-time", "nullable": true },
+          "heartbeatMetadata": { "type": "object", "nullable": true, "additionalProperties": true },
+          "robotCount": { "type": "integer", "minimum": 0 },
+          "runningRunCount": { "type": "integer", "minimum": 0 },
+          "robotNames": { "type": "array", "items": { "type": "string" } },
+          "runningRobotNames": { "type": "array", "items": { "type": "string" } },
+          "lastRunStartedAt": { "type": "string", "format": "date-time", "nullable": true },
           "isActive": { "type": "boolean" },
           "createdAt": { "type": "string", "format": "date-time" },
           "updatedAt": { "type": "string", "format": "date-time" }
@@ -589,12 +679,21 @@
       },
       "DashboardResponse": {
         "type": "object",
-        "required": ["generatedAt", "robots", "robotRuns", "runEvents"],
+        "required": ["generatedAt", "robots", "robotRuns", "runEvents", "machines"],
         "properties": {
           "generatedAt": { "type": "string", "format": "date-time" },
           "robots": { "type": "array", "items": { "$ref": "#/components/schemas/Robot" } },
           "robotRuns": { "type": "array", "items": { "$ref": "#/components/schemas/RobotRun" } },
-          "runEvents": { "type": "array", "items": { "$ref": "#/components/schemas/RunEvent" } }
+          "runEvents": { "type": "array", "items": { "$ref": "#/components/schemas/RunEvent" } },
+          "machines": { "type": "array", "items": { "$ref": "#/components/schemas/Machine" } }
+        }
+      },
+      "MachineListResponse": {
+        "type": "object",
+        "required": ["generatedAt", "machines"],
+        "properties": {
+          "generatedAt": { "type": "string", "format": "date-time" },
+          "machines": { "type": "array", "items": { "$ref": "#/components/schemas/Machine" } }
         }
       },
       "RunHistoryItem": {
@@ -645,6 +744,16 @@
           "machineIp": { "type": "string", "maxLength": 100 },
           "anydeskId": { "type": "string", "maxLength": 100 },
           "isActive": { "type": "boolean", "default": true }
+        }
+      },
+      "MachineHeartbeatRequest": {
+        "type": "object",
+        "required": ["machineName"],
+        "properties": {
+          "machineName": { "type": "string", "minLength": 1, "maxLength": 150 },
+          "machineIp": { "type": "string", "maxLength": 100 },
+          "anydeskId": { "type": "string", "maxLength": 100 },
+          "metadata": { "type": "object", "additionalProperties": true }
         }
       },
       "LoggerStartRequest": {
@@ -733,6 +842,11 @@
         "type": "object",
         "required": ["robot"],
         "properties": { "robot": { "$ref": "#/components/schemas/Robot" } }
+      },
+      "MachineResponse": {
+        "type": "object",
+        "required": ["machine"],
+        "properties": { "machine": { "$ref": "#/components/schemas/Machine" } }
       },
       "RobotRunResponse": {
         "type": "object",

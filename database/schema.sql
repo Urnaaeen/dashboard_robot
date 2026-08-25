@@ -29,6 +29,19 @@ CREATE TABLE IF NOT EXISTS rpa_user_session (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS rpa_machine (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    machine_name VARCHAR(150) NOT NULL UNIQUE,
+    machine_ip VARCHAR(100),
+    anydesk_id VARCHAR(100),
+    last_heartbeat_at TIMESTAMPTZ,
+    heartbeat_metadata JSONB,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_machine_name_not_blank CHECK (BTRIM(machine_name) <> '')
+);
+
 CREATE TABLE IF NOT EXISTS rpa_robot (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     robot_code VARCHAR(100) NOT NULL UNIQUE,
@@ -42,6 +55,7 @@ CREATE TABLE IF NOT EXISTS rpa_robot (
     desktop_flow_name VARCHAR(255),
     power_automate_url TEXT,
     account_name VARCHAR(150),
+    machine_id UUID REFERENCES rpa_machine(id),
     machine_name VARCHAR(150),
     machine_ip VARCHAR(100),
     anydesk_id VARCHAR(100),
@@ -83,6 +97,27 @@ BEGIN
     EXECUTE 'ALTER TABLE rpa_robot DROP COLUMN IF EXISTS anydesk_alias';
 END;
 $$;
+
+ALTER TABLE rpa_robot
+    ADD COLUMN IF NOT EXISTS machine_id UUID REFERENCES rpa_machine(id);
+
+INSERT INTO rpa_machine (machine_name, machine_ip, anydesk_id)
+SELECT
+    BTRIM(machine_name),
+    MAX(NULLIF(BTRIM(machine_ip), '')),
+    MAX(NULLIF(BTRIM(anydesk_id), ''))
+FROM rpa_robot
+WHERE NULLIF(BTRIM(machine_name), '') IS NOT NULL
+GROUP BY BTRIM(machine_name)
+ON CONFLICT (machine_name) DO UPDATE SET
+    machine_ip = COALESCE(rpa_machine.machine_ip, EXCLUDED.machine_ip),
+    anydesk_id = COALESCE(rpa_machine.anydesk_id, EXCLUDED.anydesk_id);
+
+UPDATE rpa_robot AS robot
+SET machine_id = machine.id
+FROM rpa_machine AS machine
+WHERE robot.machine_id IS NULL
+  AND BTRIM(robot.machine_name) = machine.machine_name;
 
 CREATE TABLE IF NOT EXISTS rpa_robot_run (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -151,6 +186,12 @@ CREATE TABLE IF NOT EXISTS rpa_control_action (
 
 CREATE INDEX IF NOT EXISTS idx_rpa_robot_active
     ON rpa_robot(is_active);
+CREATE INDEX IF NOT EXISTS idx_rpa_robot_machine
+    ON rpa_robot(machine_id);
+CREATE INDEX IF NOT EXISTS idx_rpa_machine_active
+    ON rpa_machine(is_active);
+CREATE INDEX IF NOT EXISTS idx_rpa_machine_last_heartbeat
+    ON rpa_machine(last_heartbeat_at DESC);
 CREATE INDEX IF NOT EXISTS idx_rpa_app_user_active
     ON rpa_app_user(is_active);
 CREATE INDEX IF NOT EXISTS idx_rpa_user_session_user
@@ -183,6 +224,11 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_rpa_robot_updated_at ON rpa_robot;
 CREATE TRIGGER trg_rpa_robot_updated_at
 BEFORE UPDATE ON rpa_robot
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_rpa_machine_updated_at ON rpa_machine;
+CREATE TRIGGER trg_rpa_machine_updated_at
+BEFORE UPDATE ON rpa_machine
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS trg_rpa_app_user_updated_at ON rpa_app_user;
