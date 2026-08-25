@@ -13,6 +13,31 @@ const EMPTY_ADD_ROBOT_DRAFT = Object.freeze({
   desktopFlowName: "",
 });
 
+function routeFromLocation() {
+  const segments = window.location.pathname
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch (error) {
+        return segment;
+      }
+    });
+  if (segments[0] === "robots" && segments[1]) {
+    return { view: "detail", robotCode: segments[1] };
+  }
+  if (segments[0] === "robots") {
+    return { view: "robots", robotCode: "" };
+  }
+  if (segments[0] === "history") {
+    return { view: "history", robotCode: "" };
+  }
+  return { view: "overview", robotCode: "" };
+}
+
+const initialRoute = routeFromLocation();
+
 function loadAddRobotDraft(storageKey) {
   try {
     const saved = JSON.parse(window.localStorage.getItem(storageKey) || "{}");
@@ -63,7 +88,8 @@ const state = {
   },
   addRobotDraft: { ...EMPTY_ADD_ROBOT_DRAFT },
   addRobotOpen: false,
-  view: "overview",
+  view: initialRoute.view,
+  routeRobotCode: initialRoute.robotCode,
   detailReturnView: "overview",
   selectedRobotId: "",
   lastUpdated: null,
@@ -111,6 +137,72 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function robotNameSlug(name) {
+  return String(name || "robot")
+    .normalize("NFKC")
+    .toLowerCase()
+    .trim()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "") || "robot";
+}
+
+function robotDetailPath(robot) {
+  return `/robots/${encodeURIComponent(robot.robotCode)}/${encodeURIComponent(robotNameSlug(robot.robotName))}`;
+}
+
+function pathForView(view) {
+  if (view === "robots") {
+    return "/robots";
+  }
+  if (view === "history") {
+    return "/history";
+  }
+  return "/";
+}
+
+function updateBrowserUrl(pathname, replace = false, routeState = {}) {
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method](routeState, "", pathname);
+}
+
+function syncRobotSelectionFromRoute({ canonicalize = false } = {}) {
+  if (state.view !== "detail") {
+    state.routeRobotCode = "";
+    return null;
+  }
+  const robot = state.data.robots.find((item) => item.robotCode === state.routeRobotCode) || null;
+  state.selectedRobotId = robot?.robotId || "";
+  if (robot) {
+    state.logger.robotId = robot.robotId;
+    if (canonicalize && window.location.pathname !== robotDetailPath(robot)) {
+      updateBrowserUrl(robotDetailPath(robot), true, window.history.state || {});
+    }
+  }
+  return robot;
+}
+
+function navigateToView(view, { replace = false } = {}) {
+  state.addRobotOpen = false;
+  document.body.classList.remove("modal-open");
+  state.view = view;
+  state.routeRobotCode = "";
+  updateBrowserUrl(pathForView(view), replace, { view });
+  render();
+}
+
+function navigateToRobot(robot, { replace = false } = {}) {
+  state.addRobotOpen = false;
+  document.body.classList.remove("modal-open");
+  state.view = "detail";
+  state.routeRobotCode = robot.robotCode;
+  state.selectedRobotId = robot.robotId;
+  state.logger.robotId = robot.robotId;
+  updateBrowserUrl(robotDetailPath(robot), replace, {
+    detailReturnView: state.detailReturnView || "overview",
+  });
+  render();
 }
 
 function persistAddRobotDraft() {
@@ -201,7 +293,8 @@ async function loadData({ silent = false } = {}) {
       runEvents: payload.runEvents || [],
     };
     state.lastUpdated = new Date(payload.generatedAt || Date.now());
-    if (!state.selectedRobotId && state.data.robots.length > 0) {
+    syncRobotSelectionFromRoute({ canonicalize: true });
+    if (state.view !== "detail" && !state.selectedRobotId && state.data.robots.length > 0) {
       state.selectedRobotId = state.data.robots[0].robotId;
     }
     if (!state.logger.robotId && state.data.robots.length > 0) {
@@ -430,14 +523,16 @@ function render() {
 }
 
 function updateChrome() {
+  const selectedRobot = state.data.robots.find((robot) => robot.robotId === state.selectedRobotId);
   const titles = {
     overview: ["RPA Monitoring", "Latest robot run status from PostgreSQL."],
     robots: ["Robots", "Master robot inventory with last run status."],
-    detail: ["Robot Detail", "Robot master data and latest run information."],
+    detail: [selectedRobot?.robotName || "Robot Detail", "Robot master data and latest run information."],
     history: ["Run History", "Robot execution records from PostgreSQL."],
   };
   const [title, subtitle] = titles[state.view] || titles.overview;
   pageTitle.textContent = title;
+  document.title = `${title} | RPA Monitoring`;
   pageSubtitle.textContent = subtitle;
   lastUpdated.textContent = state.lastUpdated ? `Updated ${formatDateTime(state.lastUpdated)}` : "Not loaded";
   accountAvatar.textContent = userInitials();
@@ -446,8 +541,9 @@ function updateChrome() {
 }
 
 function updateNav() {
+  const activeView = state.view === "detail" ? "robots" : state.view;
   document.querySelectorAll("[data-view]").forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.view === state.view);
+    button.classList.toggle("is-active", button.dataset.view === activeView);
   });
 }
 
@@ -614,13 +710,9 @@ function renderHistoryRow(run) {
 
 function renderDetailView() {
   const allRows = rows();
-  let selected = allRows.find((row) => row.robot.robotId === state.selectedRobotId);
-  if (!selected && allRows.length > 0) {
-    selected = allRows[0];
-    state.selectedRobotId = selected.robot.robotId;
-  }
+  const selected = allRows.find((row) => row.robot.robotId === state.selectedRobotId);
   if (!selected) {
-    return renderEmptyState("No robot registered.", "Create or import robot inventory records.");
+    return renderEmptyState("Robot not found.", "Choose an available robot from Overview, Robots, or History.");
   }
 
   const { robot, latestRun, displayStatus } = selected;
@@ -1319,19 +1411,28 @@ document.addEventListener("click", async (event) => {
     }
 
     if (action === "detail") {
+      const robot = state.data.robots.find((item) => item.robotId === robotId);
+      if (!robot) {
+        showToast("Robot not found.", "error");
+        return;
+      }
       state.detailReturnView = ["history", "robots"].includes(state.view)
         ? state.view
         : "overview";
-      state.selectedRobotId = robotId;
-      state.logger.robotId = robotId;
-      state.view = "detail";
-      render();
+      navigateToRobot(robot);
       return;
     }
 
     if (action === "back") {
-      state.view = state.detailReturnView || "overview";
-      render();
+      if (window.history.state?.detailReturnView) {
+        window.history.back();
+        return;
+      }
+      const returnView = state.detailReturnView || "overview";
+      navigateToView(returnView, { replace: true });
+      if (returnView === "history" && !state.history.loaded) {
+        await loadHistory();
+      }
       return;
     }
 
@@ -1343,11 +1444,9 @@ document.addEventListener("click", async (event) => {
 
   const viewTarget = event.target.closest("[data-view]");
   if (viewTarget) {
-    state.addRobotOpen = false;
-    document.body.classList.remove("modal-open");
-    state.view = viewTarget.dataset.view;
-    render();
-    if (state.view === "history" && !state.history.loaded) {
+    const view = viewTarget.dataset.view;
+    navigateToView(view);
+    if (view === "history" && !state.history.loaded) {
       await loadHistory();
     }
   }
@@ -1393,9 +1492,10 @@ document.addEventListener("change", (event) => {
 
   const picker = event.target.closest('[data-action="pick-robot"]');
   if (picker) {
-    state.selectedRobotId = picker.value;
-    state.logger.robotId = picker.value;
-    render();
+    const robot = state.data.robots.find((item) => item.robotId === picker.value);
+    if (robot) {
+      navigateToRobot(robot);
+    }
   }
 });
 
@@ -1446,10 +1546,27 @@ window.addEventListener("keydown", async (event) => {
   }
 });
 
+window.addEventListener("popstate", async () => {
+  const route = routeFromLocation();
+  state.view = route.view;
+  state.routeRobotCode = route.robotCode;
+  if (route.view === "detail" && window.history.state?.detailReturnView) {
+    state.detailReturnView = window.history.state.detailReturnView;
+  }
+  syncRobotSelectionFromRoute();
+  render();
+  if (state.view === "history" && !state.history.loaded) {
+    await loadHistory();
+  }
+});
+
 async function initialize() {
   try {
     await loadCurrentUser();
     await loadData();
+    if (state.view === "history" && !state.history.loaded) {
+      await loadHistory();
+    }
     state.refreshTimer = window.setInterval(() => {
       if (state.view === "history") {
         loadHistory({ silent: true });
