@@ -307,7 +307,7 @@
       "get": {
         "tags": ["Machines"],
         "summary": "List machines with calculated availability",
-        "description": "RUNNING means an assigned robot has an active run. IDLE means a heartbeat arrived within 3 minutes and no run is active. OFFLINE means a previously connected heartbeat has expired. NOT_CONNECTED means the heartbeat agent has never reported.",
+        "description": "Status reports machine availability only, derived purely from the heartbeat. NOT_CONNECTED means the heartbeat agent has never reported. OFFLINE means the last heartbeat is older than MACHINE_OFFLINE_SECONDS. ONLINE means a heartbeat arrived inside that window. Robot workload is reported separately through runningRunCount and staleRunningCount.",
         "operationId": "getMachines",
         "responses": {
           "200": {
@@ -649,7 +649,7 @@
       },
       "MachineStatus": {
         "type": "string",
-        "enum": ["RUNNING", "IDLE", "OFFLINE", "NOT_CONNECTED"]
+        "enum": ["ONLINE", "OFFLINE", "NOT_CONNECTED"]
       },
       "EventType": {
         "type": "string",
@@ -699,9 +699,11 @@
           "anydeskId": { "type": "string", "nullable": true, "example": "123 456 789" },
           "status": { "$ref": "#/components/schemas/MachineStatus" },
           "lastHeartbeatAt": { "type": "string", "format": "date-time", "nullable": true },
+          "heartbeatAgeSeconds": { "type": "integer", "nullable": true, "description": "Seconds since the last heartbeat, null when the agent has never reported." },
           "heartbeatMetadata": { "type": "object", "nullable": true, "additionalProperties": true },
           "robotCount": { "type": "integer", "minimum": 0 },
           "runningRunCount": { "type": "integer", "minimum": 0 },
+          "staleRunningCount": { "type": "integer", "minimum": 0, "description": "Runs still marked RUNNING past the robot max_expected_run_minutes." },
           "robotNames": { "type": "array", "items": { "type": "string" } },
           "runningRobotNames": { "type": "array", "items": { "type": "string" } },
           "lastRunStartedAt": { "type": "string", "format": "date-time", "nullable": true },
@@ -764,6 +766,7 @@
         "required": ["generatedAt", "robots", "robotRuns", "runEvents", "machines"],
         "properties": {
           "generatedAt": { "type": "string", "format": "date-time" },
+          "machineOfflineSeconds": { "type": "integer", "description": "Seconds without a heartbeat before a machine is reported OFFLINE.", "example": 180 },
           "robots": { "type": "array", "items": { "$ref": "#/components/schemas/Robot" } },
           "robotRuns": { "type": "array", "items": { "$ref": "#/components/schemas/RobotRun" } },
           "runEvents": { "type": "array", "items": { "$ref": "#/components/schemas/RunEvent" } },
@@ -772,9 +775,10 @@
       },
       "MachineListResponse": {
         "type": "object",
-        "required": ["generatedAt", "machines"],
+        "required": ["generatedAt", "machineOfflineSeconds", "machines"],
         "properties": {
           "generatedAt": { "type": "string", "format": "date-time" },
+          "machineOfflineSeconds": { "type": "integer", "description": "Seconds without a heartbeat before a machine is reported OFFLINE.", "example": 180 },
           "machines": { "type": "array", "items": { "$ref": "#/components/schemas/Machine" } }
         }
       },

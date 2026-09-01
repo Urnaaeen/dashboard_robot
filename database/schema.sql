@@ -132,15 +132,66 @@ $$;
 ALTER TABLE rpa_robot
     ADD COLUMN IF NOT EXISTS machine_id UUID REFERENCES rpa_machine(id);
 
+-- Heartbeat agents report $env:COMPUTERNAME in upper case, while robots are often
+-- registered with a hand typed machine name. A case sensitive UNIQUE constraint let
+-- both spellings exist as separate rows, so the registered machine never received a
+-- heartbeat. Merge the case variants into one canonical row before enforcing a case
+-- insensitive unique index.
+DO $$
+DECLARE
+    duplicate_row RECORD;
+BEGIN
+    FOR duplicate_row IN
+        SELECT
+            machine.id AS duplicate_id,
+            canonical.id AS canonical_id
+        FROM rpa_machine AS machine
+        JOIN (
+            SELECT DISTINCT ON (LOWER(machine_name))
+                id,
+                LOWER(machine_name) AS name_key
+            FROM rpa_machine
+            ORDER BY LOWER(machine_name), last_heartbeat_at DESC NULLS LAST, created_at
+        ) AS canonical ON canonical.name_key = LOWER(machine.machine_name)
+        WHERE machine.id <> canonical.id
+    LOOP
+        UPDATE rpa_machine AS canonical
+        SET
+            machine_ip = COALESCE(canonical.machine_ip, duplicate.machine_ip),
+            anydesk_id = COALESCE(canonical.anydesk_id, duplicate.anydesk_id),
+            last_heartbeat_at = GREATEST(
+                canonical.last_heartbeat_at,
+                duplicate.last_heartbeat_at
+            ),
+            heartbeat_metadata = COALESCE(
+                canonical.heartbeat_metadata,
+                duplicate.heartbeat_metadata
+            )
+        FROM rpa_machine AS duplicate
+        WHERE canonical.id = duplicate_row.canonical_id
+          AND duplicate.id = duplicate_row.duplicate_id;
+
+        UPDATE rpa_robot
+        SET machine_id = duplicate_row.canonical_id
+        WHERE machine_id = duplicate_row.duplicate_id;
+
+        DELETE FROM rpa_machine WHERE id = duplicate_row.duplicate_id;
+    END LOOP;
+END;
+$$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_rpa_machine_name_lower
+    ON rpa_machine (LOWER(machine_name));
+
 INSERT INTO rpa_machine (machine_name, machine_ip, anydesk_id)
 SELECT
-    BTRIM(machine_name),
+    MIN(BTRIM(machine_name)),
     MAX(NULLIF(BTRIM(machine_ip), '')),
     MAX(NULLIF(BTRIM(anydesk_id), ''))
 FROM rpa_robot
 WHERE NULLIF(BTRIM(machine_name), '') IS NOT NULL
-GROUP BY BTRIM(machine_name)
-ON CONFLICT (machine_name) DO UPDATE SET
+GROUP BY LOWER(BTRIM(machine_name))
+ON CONFLICT (LOWER(machine_name)) DO UPDATE SET
     machine_ip = COALESCE(rpa_machine.machine_ip, EXCLUDED.machine_ip),
     anydesk_id = COALESCE(rpa_machine.anydesk_id, EXCLUDED.anydesk_id);
 
@@ -148,7 +199,7 @@ UPDATE rpa_robot AS robot
 SET machine_id = machine.id
 FROM rpa_machine AS machine
 WHERE robot.machine_id IS NULL
-  AND BTRIM(robot.machine_name) = machine.machine_name;
+  AND LOWER(BTRIM(robot.machine_name)) = LOWER(machine.machine_name);
 
 CREATE TABLE IF NOT EXISTS rpa_robot_run (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

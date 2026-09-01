@@ -397,7 +397,7 @@ h3 {
 }
 
 .machine-table {
-  min-width: 940px;
+  min-width: 1040px;
 }
 
 .machine-table .robot-name span {
@@ -405,6 +405,14 @@ h3 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.machine-warning {
+  margin-top: 6px;
+  max-width: 240px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--red);
 }
 
 .history-table {
@@ -576,10 +584,59 @@ tbody tr:hover {
   border-color: #facaca;
 }
 
-.status-idle {
+.status-online {
   color: var(--green);
   background: var(--green-soft);
   border-color: #c4e7cf;
+}
+
+.running-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 190px;
+  max-width: 260px;
+}
+
+.running-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 2px 9px;
+  border: 1px solid #c8d9ff;
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.running-marker.is-stale {
+  border-color: #facaca;
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.running-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.running-names {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.running-note {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--red);
 }
 
 .status-offline {

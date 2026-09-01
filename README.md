@@ -192,21 +192,35 @@ ashiglagdsaar baina.
 
 ## Machine heartbeat
 
-`Machines` delgets deer status daraah baidlaar tootsoologdono:
+`Machines` delgets deer status ni gants asuultand hariulna: machine asaalttai
+baigaa eseh. Uunig zuvhun heartbeat togtoono. Robot-iin ajliin achaalal bol tusdaa
+dohio, uchir ni unasan robot-iin uldeesen RUNNING run ni host amid gedgiig
+ogt batlahgui:
 
-- `RUNNING`: machine-d holbootoi robot deer RUNNING run baina
-- `IDLE`: suuliin 3 minutad heartbeat irsen, RUNNING run baihgui
-- `OFFLINE`: umnu heartbeat irj baisan ch suuliin heartbeat 3 minutaas huuchin
 - `NOT_CONNECTED`: heartbeat agent neg ch udaa medeelel ilgeegeegui
+- `OFFLINE`: suuliin heartbeat `MACHINE_OFFLINE_SECONDS`-oos huuchin
+- `ONLINE`: suuliin heartbeat ug hugatsaanii dotor irsen
 
-Neg udaagiin heartbeat test:
+Robot-iin ajil ni `Running Robot` bagana deer tusad ni temdeglegdene. RUNNING run
+baival `1 running` temdeg garna. `max_expected_run_minutes` hetersen bol temdeg
+ulaan bolj `passed the expected duration` gesen tailbar nemegdene.
 
-```powershell
-$env:RPA_API_KEY="YOUR_32_CHARACTER_OR_LONGER_SECRET"
-.\scripts\send-machine-heartbeat.ps1 -ApiBaseUrl "http://localhost:5173"
-```
+Machine ONLINE bish baigaad RUNNING run uldsen bol status door
+`1 run is still RUNNING while the machine is not reporting` gesen seremjluuleg
+garna. Ene ni robot machine untarah esvel unahad run-aa haaj chadaagui gesen ug.
 
-Machine buriin PowerShell-iig Administrator-aar neegeed scheduled task suulgana:
+Offline bolohoos umnuh hugatsaag `.env`-iin `MACHINE_OFFLINE_SECONDS`-oor
+tohiruulna (default 180 secund, 30-oos 86400 hoorondh utga). Dashboard ug utgiig
+API-aas avch KPI text deer haruulna.
+
+Machine name tom, jijig useg ylgahgui davhardahgui. Heartbeat agent
+`$env:COMPUTERNAME`-g TOM usgeer ilgeedeg tul garaar `Bot-PC-02` gej burtgesen
+machine ch mun neg mor deer ochno. Umnu uussen davhardsan moruudiig schema
+migration avtomataar negtgene.
+
+### Suulgah
+
+Machine buriin PowerShell-iig Administrator-aar neegeed:
 
 ```powershell
 .\scripts\install-machine-heartbeat-task.ps1 `
@@ -214,11 +228,47 @@ Machine buriin PowerShell-iig Administrator-aar neegeed scheduled task suulgana:
   -ApiKey "YOUR_32_CHARACTER_OR_LONGER_SECRET"
 ```
 
-Installer ni heartbeat script-iig `C:\ProgramData\RpaMonitoring` ruu huulj, API
-key-g machine environment variable-d hadgalaad Windows Task Scheduler-aar 1 minut
-tutam ajilluulna. API key script esvel task argument dotor hadgalagdahgui.
+Installer ni:
+
+- agent script-iig `C:\ProgramData\RpaMonitoring` ruu huulna
+- API key-g zuvhun SYSTEM bolon Administrators unshij chadah
+  `C:\ProgramData\RpaMonitoring\api-key.txt` file-d hadgalna
+- Task Scheduler-aar 1 minut tutam ajilluulah task uusgene
+- duusahiin umnu neg heartbeat ilgeej shalgana
+
+Shalgah heartbeat amjiltgui bol installer aldaanii shaltgaaniig helj, exit code
+butsaana. Ug ued task suusan ch ajillahgui tul log-g harna uu.
+
+Umnuh huvilbariin machine-wide `RPA_API_KEY` environment variable ni shalgalt
+amjilttai bolsnii daraa avtomataar ustana.
+
+### Garaar neg udaa test hiih
+
+```powershell
+.\scripts\send-machine-heartbeat.ps1 `
+  -ApiBaseUrl "http://localhost:5173" `
+  -ApiKey "YOUR_32_CHARACTER_OR_LONGER_SECRET"
+```
+
+### Onoshloh
+
+Agent hezee ch chimeegui unadaggui. Ur dun bur log-d bichigdene:
+
+```powershell
+Get-Content C:\ProgramData\RpaMonitoring\heartbeat.log -Tail 20
+Get-ScheduledTaskInfo -TaskName 'RPA Monitoring Machine Heartbeat'
+```
+
+Exit code-uud:
+
+- `0`: heartbeat huleen avsan
+- `1`: configuration aldaa (API key baihgui, URL buruu)
+- `2`: dashboard tatgalzsan esvel holbogdoj chadaagui
+- `3`: agent-iin gadnah aldaa
+
 Heartbeat endpoint ni ug machine baihgui bol uusgene, bgaa bol IP, AnyDesk ID,
-heartbeat time bolon metadata-g shinechilne.
+heartbeat time bolon metadata-g shinechilne. Mun `machine_id`-gui uldsen robot-uudiig
+nereer ni holbono.
 
 ## Production Docker deployment
 

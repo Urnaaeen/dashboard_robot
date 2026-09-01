@@ -99,6 +99,7 @@ const state = {
   selectedRobotId: "",
   lastUpdated: null,
   refreshTimer: null,
+  machineOfflineSeconds: 180,
 };
 
 const statusMeta = {
@@ -110,7 +111,7 @@ const statusMeta = {
   TIMEOUT: { label: "Timeout", className: "status-timeout" },
   UNKNOWN: { label: "Unknown", className: "status-unknown" },
   STALE_RUNNING: { label: "Stale Running", className: "status-stale_running" },
-  IDLE: { label: "Idle", className: "status-idle" },
+  ONLINE: { label: "Online", className: "status-online" },
   OFFLINE: { label: "Offline", className: "status-offline" },
   NOT_CONNECTED: { label: "Not Connected", className: "status-not_connected" },
   DISABLED: { label: "Turned Off", className: "status-disabled" },
@@ -300,6 +301,7 @@ async function loadData({ silent = false } = {}) {
       runEvents: payload.runEvents || [],
       machines: payload.machines || [],
     };
+    state.machineOfflineSeconds = Number(payload.machineOfflineSeconds) || 180;
     state.lastUpdated = new Date(payload.generatedAt || Date.now());
     syncRobotSelectionFromRoute({ canonicalize: true });
     if (state.view !== "detail" && !state.selectedRobotId && state.data.robots.length > 0) {
@@ -626,12 +628,76 @@ function filteredMachines() {
   });
 }
 
+function offlineThresholdLabel() {
+  const seconds = Number(state.machineOfflineSeconds) || 180;
+  if (seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+  }
+  return `${seconds} seconds`;
+}
+
+function formatHeartbeatAge(machine) {
+  if (!machine.lastHeartbeatAt) {
+    return "Never reported";
+  }
+  const seconds = Number(machine.heartbeatAgeSeconds);
+  if (!Number.isFinite(seconds)) {
+    return "";
+  }
+  if (seconds < 60) {
+    return `${Math.max(seconds, 0)} sec ago`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes} min ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours} hr ago`;
+  }
+  return `${Math.floor(hours / 24)} days ago`;
+}
+
+function machineWarning(machine) {
+  const runningCount = Number(machine.runningRunCount || 0);
+  if (runningCount > 0 && machine.status !== "ONLINE") {
+    const suffix = runningCount === 1 ? "run is" : "runs are";
+    return `${runningCount} ${suffix} still RUNNING while the machine is not reporting`;
+  }
+  return "";
+}
+
+function renderRunningCell(machine) {
+  const runningCount = Number(machine.runningRunCount || 0);
+  if (!runningCount) {
+    return '<span class="muted">-</span>';
+  }
+  const staleCount = Number(machine.staleRunningCount || 0);
+  const names = (machine.runningRobotNames || []).join(", ");
+  const label = runningCount === 1 ? "1 running" : `${runningCount} running`;
+  const note = staleCount
+    ? `${staleCount === 1 ? "1 run has" : `${staleCount} runs have`} passed the expected duration`
+    : "";
+  return `
+    <div class="running-cell">
+      <span class="running-marker ${staleCount ? "is-stale" : ""}">
+        <span class="running-dot" aria-hidden="true"></span>
+        <span>${escapeHtml(label)}</span>
+      </span>
+      <span class="running-names" title="${escapeHtml(names)}">${escapeHtml(names)}</span>
+      ${note ? `<span class="running-note">${escapeHtml(note)}</span>` : ""}
+    </div>
+  `;
+}
+
 function renderMachinesView() {
   const machines = filteredMachines();
   const metrics = {
     total: machines.length,
     running: machines.filter((machine) => machine.status === "RUNNING").length,
-    idle: machines.filter((machine) => machine.status === "IDLE").length,
+    online: machines.filter((machine) => machine.status === "ONLINE").length,
+    withRuns: machines.filter((machine) => Number(machine.runningRunCount || 0) > 0).length,
     offline: machines.filter((machine) => machine.status === "OFFLINE").length,
     notConnected: machines.filter((machine) => machine.status === "NOT_CONNECTED").length,
   };
@@ -639,9 +705,9 @@ function renderMachinesView() {
     <div class="dashboard-stack">
       <section class="kpi-grid machine-kpi-grid" aria-label="Machine KPI">
         ${renderKpi("Machines", metrics.total, "Active machine records", "status-unknown")}
-        ${renderKpi("Running", metrics.running, "At least one active robot run", "status-running")}
-        ${renderKpi("Idle", metrics.idle, "Heartbeat received, no active run", "status-idle")}
-        ${renderKpi("Offline", metrics.offline, "Heartbeat stopped for more than 3 minutes", "status-offline")}
+        ${renderKpi("Online", metrics.online, `Heartbeat within ${offlineThresholdLabel()}`, "status-online")}
+        ${renderKpi("Running", metrics.withRuns, "Machines with an active robot run", "status-running")}
+        ${renderKpi("Offline", metrics.offline, `Heartbeat stopped for more than ${offlineThresholdLabel()}`, "status-offline")}
         ${renderKpi("Not Connected", metrics.notConnected, "Heartbeat agent has not reported yet", "status-not_connected")}
       </section>
       ${renderMachineFilters()}
@@ -671,7 +737,7 @@ function renderMachineFilters() {
           <label for="machineStatus">Status</label>
           <select id="machineStatus" data-machine-filter="status">
             <option value="ALL">All statuses</option>
-            ${["RUNNING", "IDLE", "OFFLINE", "NOT_CONNECTED"].map((status) => `<option value="${status}" ${selected(status, state.machineFilters.status)}>${statusMeta[status].label}</option>`).join("")}
+            ${["ONLINE", "OFFLINE", "NOT_CONNECTED"].map((status) => `<option value="${status}" ${selected(status, state.machineFilters.status)}>${statusMeta[status].label}</option>`).join("")}
           </select>
         </div>
         <button class="ghost-button" type="button" data-action="clear-machine-filters">${icons.filter}<span>Clear</span></button>
@@ -705,7 +771,7 @@ function renderMachineTable(machines) {
 
 function renderMachineRow(machine) {
   const robotNames = (machine.robotNames || []).join(", ") || "No robots assigned";
-  const runningNames = (machine.runningRobotNames || []).join(", ") || "-";
+  const warning = machineWarning(machine);
   return `
     <tr>
       <td>
@@ -714,15 +780,23 @@ function renderMachineRow(machine) {
           <span>${escapeHtml(machine.machineIp || "No IP address")}</span>
         </div>
       </td>
-      <td>${renderStatusBadge(machine.status)}</td>
+      <td>
+        ${renderStatusBadge(machine.status)}
+        ${warning ? `<div class="machine-warning" title="${escapeHtml(warning)}">${escapeHtml(warning)}</div>` : ""}
+      </td>
       <td>
         <div class="robot-name">
           <strong>${Number(machine.robotCount || 0).toLocaleString()}</strong>
           <span title="${escapeHtml(robotNames)}">${escapeHtml(robotNames)}</span>
         </div>
       </td>
-      <td class="truncate" title="${escapeHtml(runningNames)}">${escapeHtml(runningNames)}</td>
-      <td>${formatDateTime(machine.lastHeartbeatAt)}</td>
+      <td>${renderRunningCell(machine)}</td>
+      <td>
+        <div class="robot-name">
+          <strong>${formatDateTime(machine.lastHeartbeatAt)}</strong>
+          <span>${escapeHtml(formatHeartbeatAge(machine))}</span>
+        </div>
+      </td>
       <td>${escapeHtml(machine.anydeskId || "-")}</td>
     </tr>
   `;
@@ -816,8 +890,9 @@ function renderHistoryTable(historyRuns) {
 }
 
 function renderHistoryRow(run) {
-  const robot = { maxExpectedRunMinutes: run.maxExpectedRunMinutes };
-  const displayStatus = getDisplayStatus(robot, run);
+  // A finished run keeps the status it finished with. Turning the robot off later
+  // does not rewrite what happened, so history never uses the robot current state.
+  const displayStatus = run.status || "UNKNOWN";
   const errorText = [run.errorCode, run.errorMessage].filter(Boolean).join(" - ") || "-";
   return `
     <tr>
@@ -830,7 +905,7 @@ function renderHistoryRow(run) {
       <td>${renderStatusBadge(displayStatus)}</td>
       <td>${formatDateTime(run.startedAt)}</td>
       <td>${formatDateTime(run.endedAt)}</td>
-      <td>${formatDuration(run, robot)}</td>
+      <td>${formatDuration(run)}</td>
       <td>${escapeHtml(run.machineName || "-")}</td>
       <td class="truncate" title="${escapeHtml(errorText)}">${escapeHtml(errorText)}</td>
       <td>
@@ -1105,7 +1180,7 @@ function renderOverviewRow({ robot, latestRun, displayStatus }) {
       <td>${escapeHtml(robot.machineName)}</td>
       <td>${renderStatusBadge(displayStatus)}</td>
       <td>${formatDateTime(latestRun?.startedAt)}</td>
-      <td>${formatDuration(latestRun, robot)}</td>
+      <td>${formatDuration(latestRun)}</td>
       <td class="truncate" title="${escapeHtml(latestRun?.errorMessage || "")}">${escapeHtml(latestRun?.errorMessage || "-")}</td>
       <td>
         <div class="table-actions">
@@ -1279,7 +1354,7 @@ function renderRunCard(run, robot) {
       <div class="fact-grid">
         ${renderFact("StartedAt", formatDateTime(run.startedAt))}
         ${renderFact("EndedAt", formatDateTime(run.endedAt))}
-        ${renderFact("Duration", formatDuration(run, robot))}
+        ${renderFact("Duration", formatDuration(run))}
         ${renderFact("MachineName", run.machineName)}
         ${renderFact("CloudFlowRunId", run.cloudFlowRunId || "-")}
         ${renderFact("DesktopFlowSessionId", run.desktopFlowSessionId || "-")}
@@ -1356,7 +1431,7 @@ function localDateValue(value) {
   return new Date(date.getTime() - timezoneOffset).toISOString().slice(0, 10);
 }
 
-function formatDuration(run, robot) {
+function formatDuration(run) {
   if (!run) {
     return "-";
   }

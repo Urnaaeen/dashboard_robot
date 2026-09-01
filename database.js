@@ -6,6 +6,16 @@ if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL is required. Create .env from .env.example.");
 }
 
+const MACHINE_OFFLINE_SECONDS = Number(process.env.MACHINE_OFFLINE_SECONDS || 180);
+
+if (
+  !Number.isInteger(MACHINE_OFFLINE_SECONDS) ||
+  MACHINE_OFFLINE_SECONDS < 30 ||
+  MACHINE_OFFLINE_SECONDS > 86400
+) {
+  throw new Error("MACHINE_OFFLINE_SECONDS must be an integer between 30 and 86400.");
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.PGSSL === "true" ? { rejectUnauthorized: false } : false,
@@ -67,6 +77,11 @@ function mapMachine(row) {
     anydeskId: row.anydesk_id,
     status: row.status || "NOT_CONNECTED",
     lastHeartbeatAt: row.last_heartbeat_at,
+    heartbeatAgeSeconds:
+      row.heartbeat_age_seconds === null || row.heartbeat_age_seconds === undefined
+        ? null
+        : Number(row.heartbeat_age_seconds),
+    staleRunningCount: Number(row.stale_running_count || 0),
     heartbeatMetadata: row.heartbeat_metadata,
     robotCount: Number(row.robot_count || 0),
     runningRunCount: Number(row.running_run_count || 0),
@@ -345,8 +360,9 @@ async function getDashboardData() {
   };
 }
 
-async function getMachines() {
-  const result = await pool.query(`
+async function getMachines({ machineId = null } = {}) {
+  const result = await pool.query(
+    `
     WITH robot_summary AS (
       SELECT
         machine_id,
@@ -360,6 +376,10 @@ async function getMachines() {
       SELECT
         robot.machine_id,
         COUNT(*) AS running_run_count,
+        COUNT(*) FILTER (
+          WHERE robot_run.started_at
+            < NOW() - make_interval(mins => robot.max_expected_run_minutes)
+        ) AS stale_running_count,
         ARRAY_AGG(DISTINCT robot.robot_name ORDER BY robot.robot_name) AS running_robot_names,
         MAX(robot_run.started_at) AS last_run_started_at
       FROM rpa_robot_run AS robot_run
@@ -374,27 +394,34 @@ async function getMachines() {
       COALESCE(robot_summary.robot_count, 0) AS robot_count,
       COALESCE(robot_summary.robot_names, ARRAY[]::text[]) AS robot_names,
       COALESCE(running_summary.running_run_count, 0) AS running_run_count,
+      COALESCE(running_summary.stale_running_count, 0) AS stale_running_count,
       COALESCE(running_summary.running_robot_names, ARRAY[]::text[]) AS running_robot_names,
       running_summary.last_run_started_at,
+      EXTRACT(EPOCH FROM (NOW() - machine.last_heartbeat_at))::INTEGER AS heartbeat_age_seconds,
+      -- Status answers one question only: is the machine powered on and
+      -- reporting? Robot workload is a separate signal, because a run left in
+      -- RUNNING by a crashed robot says nothing about the host being alive.
       CASE
-        WHEN COALESCE(running_summary.running_run_count, 0) > 0 THEN 'RUNNING'
         WHEN machine.last_heartbeat_at IS NULL THEN 'NOT_CONNECTED'
-        WHEN machine.last_heartbeat_at >= NOW() - INTERVAL '3 minutes' THEN 'IDLE'
-        ELSE 'OFFLINE'
+        WHEN machine.last_heartbeat_at < NOW() - make_interval(secs => $1::integer) THEN 'OFFLINE'
+        ELSE 'ONLINE'
       END AS status
     FROM rpa_machine AS machine
     LEFT JOIN robot_summary ON robot_summary.machine_id = machine.id
     LEFT JOIN running_summary ON running_summary.machine_id = machine.id
     WHERE machine.is_active = TRUE
+      AND ($2::uuid IS NULL OR machine.id = $2::uuid)
     ORDER BY
       CASE
+        WHEN machine.last_heartbeat_at IS NULL THEN 4
+        WHEN machine.last_heartbeat_at < NOW() - make_interval(secs => $1::integer) THEN 3
         WHEN COALESCE(running_summary.running_run_count, 0) > 0 THEN 1
-        WHEN machine.last_heartbeat_at >= NOW() - INTERVAL '3 minutes' THEN 2
-        WHEN machine.last_heartbeat_at IS NOT NULL THEN 3
-        ELSE 4
+        ELSE 2
       END,
       machine.machine_name
-  `);
+  `,
+    [MACHINE_OFFLINE_SECONDS, machineId],
+  );
   return result.rows.map(mapMachine);
 }
 
@@ -409,7 +436,7 @@ async function upsertMachine(executor, payload, { heartbeat = false } = {}) {
         machine_name, machine_ip, anydesk_id, last_heartbeat_at, heartbeat_metadata
       )
       VALUES ($1, $2, $3, CASE WHEN $4 THEN NOW() ELSE NULL END, $5::jsonb)
-      ON CONFLICT (machine_name) DO UPDATE SET
+      ON CONFLICT (LOWER(machine_name)) DO UPDATE SET
         machine_ip = COALESCE(EXCLUDED.machine_ip, rpa_machine.machine_ip),
         anydesk_id = COALESCE(EXCLUDED.anydesk_id, rpa_machine.anydesk_id),
         last_heartbeat_at = CASE
@@ -436,8 +463,19 @@ async function upsertMachine(executor, payload, { heartbeat = false } = {}) {
 
 async function recordMachineHeartbeat(payload) {
   const row = await upsertMachine(pool, payload, { heartbeat: true });
-  const machines = await getMachines();
-  return machines.find((machine) => machine.machineId === row.id) || mapMachine(row);
+  // A robot registered before its machine started reporting has no machine_id yet.
+  // Adopt it here so the heartbeat immediately counts towards the right machine.
+  await pool.query(
+    `
+      UPDATE rpa_robot
+      SET machine_id = $1
+      WHERE machine_id IS NULL
+        AND LOWER(BTRIM(machine_name)) = LOWER($2)
+    `,
+    [row.id, row.machine_name],
+  );
+  const machines = await getMachines({ machineId: row.id });
+  return machines[0] || mapMachine(row);
 }
 
 async function getRunHistory({ search, status, startedFrom, startedTo, limit }) {
@@ -890,6 +928,7 @@ async function close() {
 }
 
 module.exports = {
+  MACHINE_OFFLINE_SECONDS,
   close,
   createRobot,
   createRunEvent,

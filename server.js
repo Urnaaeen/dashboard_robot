@@ -403,7 +403,11 @@ async function handleApi(req, res, pathname, searchParams) {
   if (req.method === "GET" && pathname === "/api/dashboard") {
     await requireSession(req);
     const data = await database.getDashboardData();
-    sendJson(res, 200, { generatedAt: nowIso(), ...data });
+    sendJson(res, 200, {
+      generatedAt: nowIso(),
+      machineOfflineSeconds: database.MACHINE_OFFLINE_SECONDS,
+      ...data,
+    });
     return true;
   }
 
@@ -435,7 +439,11 @@ async function handleApi(req, res, pathname, searchParams) {
   if (req.method === "GET" && pathname === "/api/machines") {
     await requireSession(req);
     const machines = await database.getMachines();
-    sendJson(res, 200, { generatedAt: nowIso(), machines });
+    sendJson(res, 200, {
+      generatedAt: nowIso(),
+      machineOfflineSeconds: database.MACHINE_OFFLINE_SECONDS,
+      machines,
+    });
     return true;
   }
 
