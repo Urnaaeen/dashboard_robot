@@ -1025,6 +1025,14 @@ a.side-item-title:hover {
   text-decoration: line-through;
 }
 
+.side-error {
+  color: var(--red);
+}
+
+.side-error .link-button {
+  margin-left: 4px;
+}
+
 .detail-hero {
   padding: 18px;
   background: linear-gradient(135deg, #ffffff 0%, #f6faf8 100%);

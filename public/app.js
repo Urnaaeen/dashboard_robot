@@ -1032,6 +1032,7 @@ function ensureRobotDetailPanels() {
     suggestions: [],
     loading: true,
     error: "",
+    suggestionDraft: "",
   };
   loadRobotDetailPanels(robotId);
 }
@@ -1223,7 +1224,19 @@ function renderDocumentUpload() {
   `;
 }
 
+function renderSidePanelError() {
+  return `
+    <p class="side-empty side-error">
+      ${escapeHtml(state.robotDetail.error)}
+      <button class="link-button" type="button" data-action="retry-panels">Retry</button>
+    </p>
+  `;
+}
+
 function renderDocumentList(documents) {
+  if (state.robotDetail.error && !documents.length) {
+    return renderSidePanelError();
+  }
   if (state.robotDetail.loading && !documents.length) {
     return '<p class="side-empty">Loading files...</p>';
   }
@@ -1288,6 +1301,9 @@ function renderSuggestionPanel() {
 }
 
 function renderSuggestionList(suggestions) {
+  if (state.robotDetail.error && !suggestions.length) {
+    return renderSidePanelError();
+  }
   if (state.robotDetail.loading && !suggestions.length) {
     return '<p class="side-empty">Loading suggestions...</p>';
   }
@@ -2063,6 +2079,11 @@ document.addEventListener("click", async (event) => {
       if (returnView === "history" && !state.history.loaded) {
         await loadHistory();
       }
+      return;
+    }
+
+    if (action === "retry-panels") {
+      await loadRobotDetailPanels(state.selectedRobotId);
       return;
     }
 
