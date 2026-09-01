@@ -6,6 +6,8 @@ if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL is required. Create .env from .env.example.");
 }
 
+const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+
 const MACHINE_OFFLINE_SECONDS = Number(process.env.MACHINE_OFFLINE_SECONDS || 180);
 
 if (
@@ -138,6 +140,38 @@ function mapRunEvent(row) {
     message: row.message,
     eventData: row.event_data,
     createdAt: row.created_at,
+  };
+}
+
+function mapRobotDocument(row) {
+  return {
+    documentId: row.id,
+    robotId: row.robot_id,
+    documentType: row.document_type,
+    fileName: row.file_name,
+    contentType: row.content_type,
+    byteSize: Number(row.byte_size),
+    description: row.description,
+    uploadedBy: row.uploaded_by,
+    uploadedByName: row.uploaded_by_name,
+    createdAt: row.created_at,
+  };
+}
+
+function mapRobotSuggestion(row) {
+  return {
+    suggestionId: row.id,
+    robotId: row.robot_id,
+    title: row.title,
+    details: row.details,
+    isDone: row.is_done,
+    createdBy: row.created_by,
+    createdByName: row.created_by_name,
+    createdAt: row.created_at,
+    completedBy: row.completed_by,
+    completedByName: row.completed_by_name,
+    completedAt: row.completed_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -923,14 +957,191 @@ async function updateRunStatus(payload) {
   }
 }
 
+async function assertRobotExists(executor, robotId) {
+  const result = await executor.query("SELECT id FROM rpa_robot WHERE id = $1", [robotId]);
+  if (!result.rowCount) {
+    throw httpError(`Robot not found: ${robotId}`, 404);
+  }
+}
+
+async function getRobotDocuments(robotId) {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM rpa_robot_document
+      WHERE robot_id = $1
+      ORDER BY created_at DESC
+    `,
+    [robotId],
+  );
+  return result.rows.map(mapRobotDocument);
+}
+
+async function createRobotDocument(payload) {
+  const content = payload.content;
+  if (!Buffer.isBuffer(content) || !content.length) {
+    throw httpError("The uploaded file is empty.", 400);
+  }
+  if (content.length > DOCUMENT_MAX_BYTES) {
+    throw httpError(
+      `The file exceeds the ${Math.floor(DOCUMENT_MAX_BYTES / (1024 * 1024))} MB limit.`,
+      413,
+    );
+  }
+
+  return withTransaction(async (client) => {
+    await assertRobotExists(client, payload.robotId);
+    const documentResult = await client.query(
+      `
+        INSERT INTO rpa_robot_document (
+          robot_id, document_type, file_name, content_type,
+          byte_size, description, uploaded_by, uploaded_by_name
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING *
+      `,
+      [
+        payload.robotId,
+        payload.documentType || "OTHER",
+        String(payload.fileName || "").trim().slice(0, 255),
+        String(payload.contentType || "application/octet-stream").slice(0, 150),
+        content.length,
+        nullable(payload.description),
+        nullable(payload.uploadedBy),
+        nullable(payload.uploadedByName),
+      ],
+    );
+    const document = documentResult.rows[0];
+    await client.query(
+      "INSERT INTO rpa_robot_document_content (document_id, content) VALUES ($1, $2)",
+      [document.id, content],
+    );
+    return mapRobotDocument(document);
+  });
+}
+
+async function getRobotDocumentContent(documentId) {
+  const result = await pool.query(
+    `
+      SELECT
+        document.*,
+        document_content.content
+      FROM rpa_robot_document AS document
+      JOIN rpa_robot_document_content AS document_content
+        ON document_content.document_id = document.id
+      WHERE document.id = $1
+    `,
+    [documentId],
+  );
+  if (!result.rowCount) {
+    throw httpError(`Document not found: ${documentId}`, 404);
+  }
+  const row = result.rows[0];
+  return { ...mapRobotDocument(row), content: row.content };
+}
+
+async function deleteRobotDocument(documentId) {
+  // The content row goes with it through ON DELETE CASCADE.
+  const result = await pool.query(
+    "DELETE FROM rpa_robot_document WHERE id = $1 RETURNING *",
+    [documentId],
+  );
+  if (!result.rowCount) {
+    throw httpError(`Document not found: ${documentId}`, 404);
+  }
+  return mapRobotDocument(result.rows[0]);
+}
+
+async function getRobotSuggestions(robotId) {
+  // Open items first, newest at the top of each group, so a fresh suggestion
+  // lands where the reader is looking.
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM rpa_robot_suggestion
+      WHERE robot_id = $1
+      ORDER BY is_done, created_at DESC
+    `,
+    [robotId],
+  );
+  return result.rows.map(mapRobotSuggestion);
+}
+
+async function createRobotSuggestion(payload) {
+  const title = String(payload.title || "").trim();
+  if (!title) {
+    throw httpError("title cannot be blank.", 400);
+  }
+  return withTransaction(async (client) => {
+    await assertRobotExists(client, payload.robotId);
+    const result = await client.query(
+      `
+        INSERT INTO rpa_robot_suggestion (
+          robot_id, title, details, created_by, created_by_name
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+      `,
+      [
+        payload.robotId,
+        title.slice(0, 300),
+        nullable(payload.details),
+        nullable(payload.createdBy),
+        nullable(payload.createdByName),
+      ],
+    );
+    return mapRobotSuggestion(result.rows[0]);
+  });
+}
+
+async function setRobotSuggestionDone(suggestionId, isDone, actor = {}) {
+  const result = await pool.query(
+    `
+      UPDATE rpa_robot_suggestion
+      SET
+        is_done = $2,
+        completed_by = CASE WHEN $2 THEN $3::uuid ELSE NULL END,
+        completed_by_name = CASE WHEN $2 THEN $4 ELSE NULL END,
+        completed_at = CASE WHEN $2 THEN NOW() ELSE NULL END
+      WHERE id = $1
+      RETURNING *
+    `,
+    [suggestionId, isDone, nullable(actor.userId), nullable(actor.displayName)],
+  );
+  if (!result.rowCount) {
+    throw httpError(`Suggestion not found: ${suggestionId}`, 404);
+  }
+  return mapRobotSuggestion(result.rows[0]);
+}
+
+async function deleteRobotSuggestion(suggestionId) {
+  const result = await pool.query(
+    "DELETE FROM rpa_robot_suggestion WHERE id = $1 RETURNING *",
+    [suggestionId],
+  );
+  if (!result.rowCount) {
+    throw httpError(`Suggestion not found: ${suggestionId}`, 404);
+  }
+  return mapRobotSuggestion(result.rows[0]);
+}
+
 async function close() {
   await pool.end();
 }
 
 module.exports = {
+  DOCUMENT_MAX_BYTES,
   MACHINE_OFFLINE_SECONDS,
   close,
   createRobot,
+  createRobotDocument,
+  createRobotSuggestion,
+  deleteRobotDocument,
+  deleteRobotSuggestion,
+  getRobotDocumentContent,
+  getRobotDocuments,
+  getRobotSuggestions,
+  setRobotSuggestionDone,
   createRunEvent,
   createOrUpdateUser,
   createUserSession,

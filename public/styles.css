@@ -883,6 +883,148 @@ tbody tr:hover {
   align-items: start;
 }
 
+.detail-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.side-panel {
+  padding: 0 0 14px;
+}
+
+.side-panel .panel-heading {
+  padding: 14px 16px 10px;
+}
+
+.side-panel h2 {
+  font-size: 15px;
+}
+
+.side-empty {
+  margin: 0;
+  padding: 4px 16px 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.upload-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 12px;
+}
+
+.upload-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.side-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.side-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.side-item-icon {
+  display: flex;
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.side-item-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.side-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.side-item-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+a.side-item-title {
+  text-decoration: none;
+}
+
+a.side-item-title:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.side-item-meta {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.suggestion-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 16px 12px;
+}
+
+.suggestion-form textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  padding: 8px 10px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.suggestion-form textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.suggestion-check {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+
+.suggestion-check:disabled {
+  cursor: not-allowed;
+}
+
+.suggestion-item.is-done .side-item-title {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
 .detail-hero {
   padding: 18px;
   background: linear-gradient(135deg, #ffffff 0%, #f6faf8 100%);

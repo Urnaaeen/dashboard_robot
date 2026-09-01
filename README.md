@@ -105,6 +105,9 @@ Jishee configuration-g [.env.example](.env.example)-ees harna uu.
 - `rpa_robot_run`: status, start/end, duration, run IDs, error, retry, metadata
 - `rpa_run_event`: run detail events
 - `rpa_control_action`: future Retry, Resubmit, Run Now, Cancel actions
+- `rpa_robot_document`: robot buriin file-iin metadata (ner, torol, hemjee, hen oruulsan)
+- `rpa_robot_document_content`: file-iin bait, tusdaa husnegt deer
+- `rpa_robot_suggestion`: robot deer garsan sanal, hergejsen esehiin tulhuurtei
 - `rpa_app_user`: dashboard username, password hash, role, active status
 - `rpa_user_session`: hashed session token, expiry, last activity
 
@@ -131,6 +134,16 @@ POST /api/logger/success
 POST /api/logger/failed
 POST /api/logger/event
 POST /api/runs/status
+
+GET    /api/robots/:robotId/documents
+POST   /api/robots/:robotId/documents
+GET    /api/documents/:documentId/content
+DELETE /api/documents/:documentId
+
+GET    /api/robots/:robotId/suggestions
+POST   /api/robots/:robotId/suggestions
+PATCH  /api/suggestions/:suggestionId
+DELETE /api/suggestions/:suggestionId
 ```
 
 `/api/health` bolon `/api/auth/login`-oos busad endpoint hamgaalalttai. Public
@@ -189,6 +202,50 @@ SUCCESS/FAILED endpoint-d `robotCode`-g ilgeene. Neg robot deer olon RUNNING
 run baival START deer ashiglasan `cloudFlowRunId`-g bas ilgeej yag run-iig songono.
 START response-iin `robotRun.robotRunId` ni event bolon general status endpoint-d
 ashiglagdsaar baina.
+
+## Robot documents and suggestions
+
+Robot detail delgetsiin baruun tald hoyor panel ni zovhon tuhain robotynh.
+Hoyor husnegt ch `robot_id`-aar holbogdson tul neg robotyn file, sanal ni
+hezee ch oor robot deer haragdahgui. Robot ustgahad file, sanal ni hamt
+ustana; robot untraahad haragdsaar baina.
+
+### Documents
+
+Process diagram, support engineering-iin gariin avlaga, specification zereg
+material-iig ene deer hadgalna. File ni PostgreSQL dotor hadgalagdana, tul
+`pg_dump` backup ni tednii hamt avna.
+
+- Deed hemjee: 10 MB
+- Zovshoorogdoh file extension: pdf, png, jpg, jpeg, gif, webp, txt, md, csv,
+  doc, docx, xls, xlsx, ppt, pptx, vsd, vsdx
+- Content type-iig server ni file-iin extension-oos gargana, browser-iin
+  ilgeesen utgad itgehgui
+- SVG bolon HTML zoriudaar hoiglogdson, uchir ni dotroo script aguulj chadna
+- Tatah bur `Content-Disposition: attachment`, tul browser dotor hezee ch
+  neegdehgui
+
+File ni multipart bish, huseltiin body deer shuud ilgeegdene. Ner ni
+`X-File-Name` header deer percent encode hiigdsen baina, tul mongol nertei
+file ajillana.
+
+### Suggestions
+
+Robot deer sain bolgoh sanal oruulna. Shine sanal ni jagsaaltiin hamgiin
+deed tald check-tei baidlaar orj irne. Hogjuulegch hergejuulsnii daraa
+check hiihed ug mor doosh shiljij, hen hezee hergejuulsen ni bichigdene.
+
+### Erh
+
+| Uildel | ADMIN | OPERATOR | VIEWER |
+| --- | --- | --- | --- |
+| File harah, tatah | tiim | tiim | tiim |
+| File nemeh | tiim | tiim | ugui |
+| File ustgah | tiim | ugui | ugui |
+| Sanal harah | tiim | tiim | tiim |
+| Sanal oruulah | tiim | tiim | ugui |
+| Check hiih | tiim | ugui | ugui |
+| Sanal ustgah | tiim | ugui | ugui |
 
 ## Machine heartbeat
 

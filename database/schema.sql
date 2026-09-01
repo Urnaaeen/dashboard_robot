@@ -266,6 +266,58 @@ CREATE TABLE IF NOT EXISTS rpa_control_action (
     )
 );
 
+-- Reference material for a robot: process diagrams, support engineering guides,
+-- specifications. Metadata only, so listing documents never reads binary data.
+CREATE TABLE IF NOT EXISTS rpa_robot_document (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    robot_id UUID NOT NULL REFERENCES rpa_robot(id) ON DELETE CASCADE,
+    document_type VARCHAR(30) NOT NULL DEFAULT 'OTHER',
+    file_name VARCHAR(255) NOT NULL,
+    content_type VARCHAR(150) NOT NULL,
+    byte_size INTEGER NOT NULL,
+    description TEXT,
+    uploaded_by UUID REFERENCES rpa_app_user(id) ON DELETE SET NULL,
+    uploaded_by_name VARCHAR(200),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_document_type CHECK (
+        document_type IN ('PROCESS_DIAGRAM', 'SUPPORT_GUIDE', 'SPECIFICATION', 'OTHER')
+    ),
+    CONSTRAINT chk_document_byte_size CHECK (
+        byte_size > 0 AND byte_size <= 10485760
+    ),
+    CONSTRAINT chk_document_file_name CHECK (BTRIM(file_name) <> '')
+);
+
+-- The bytes live in their own table. Several queries in this project select
+-- whole rows, and keeping the payload separate guarantees none of them ever
+-- drags megabytes of file content along.
+CREATE TABLE IF NOT EXISTS rpa_robot_document_content (
+    document_id UUID PRIMARY KEY REFERENCES rpa_robot_document(id) ON DELETE CASCADE,
+    content BYTEA NOT NULL
+);
+
+-- Improvement requests raised against a robot. New entries stay open at the top
+-- of the list until a developer marks them done.
+CREATE TABLE IF NOT EXISTS rpa_robot_suggestion (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    robot_id UUID NOT NULL REFERENCES rpa_robot(id) ON DELETE CASCADE,
+    title VARCHAR(300) NOT NULL,
+    details TEXT,
+    is_done BOOLEAN NOT NULL DEFAULT FALSE,
+    created_by UUID REFERENCES rpa_app_user(id) ON DELETE SET NULL,
+    created_by_name VARCHAR(200),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_by UUID REFERENCES rpa_app_user(id) ON DELETE SET NULL,
+    completed_by_name VARCHAR(200),
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_suggestion_title CHECK (BTRIM(title) <> ''),
+    CONSTRAINT chk_suggestion_done CHECK (
+        (is_done = FALSE AND completed_at IS NULL)
+        OR (is_done = TRUE AND completed_at IS NOT NULL)
+    )
+);
+
 CREATE INDEX IF NOT EXISTS idx_rpa_robot_active
     ON rpa_robot(is_active);
 CREATE INDEX IF NOT EXISTS idx_rpa_robot_machine
@@ -294,6 +346,10 @@ CREATE INDEX IF NOT EXISTS idx_rpa_control_action_robot
     ON rpa_control_action(robot_id);
 CREATE INDEX IF NOT EXISTS idx_rpa_control_action_run
     ON rpa_control_action(robot_run_id);
+CREATE INDEX IF NOT EXISTS idx_rpa_robot_document_robot
+    ON rpa_robot_document(robot_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rpa_robot_suggestion_robot
+    ON rpa_robot_suggestion(robot_id, is_done, created_at DESC);
 
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$
@@ -321,4 +377,9 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 DROP TRIGGER IF EXISTS trg_rpa_robot_run_updated_at ON rpa_robot_run;
 CREATE TRIGGER trg_rpa_robot_run_updated_at
 BEFORE UPDATE ON rpa_robot_run
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_rpa_robot_suggestion_updated_at ON rpa_robot_suggestion;
+CREATE TRIGGER trg_rpa_robot_suggestion_updated_at
+BEFORE UPDATE ON rpa_robot_suggestion
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

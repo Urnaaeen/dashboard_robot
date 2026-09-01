@@ -18,7 +18,9 @@
     { "name": "History", "description": "Searchable robot run history" },
     { "name": "Robots", "description": "Robot master inventory" },
     { "name": "Machines", "description": "Machine heartbeat and live availability" },
-    { "name": "Logging", "description": "Power Automate run logging" }
+    { "name": "Logging", "description": "Power Automate run logging" },
+    { "name": "Documents", "description": "Robot reference files" },
+    { "name": "Suggestions", "description": "Robot improvement requests" }
   ],
   "paths": {
     "/api/auth/login": {
@@ -530,6 +532,449 @@
           "500": { "$ref": "#/components/responses/ServerError" }
         }
       }
+    },
+    "/api/robots/{robotId}/documents": {
+      "get": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "List the reference files held for one robot",
+        "description": "Returns metadata only; the bytes are fetched separately. Files belong to a single robot and never appear on another robot.",
+        "operationId": "getRobotDocuments",
+        "parameters": [
+          {
+            "name": "robotId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Document metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Upload a reference file for a robot",
+        "description": "ADMIN or OPERATOR. The file is sent as the raw request body, not as multipart. The name travels in X-File-Name percent encoded, the classification in X-Document-Type, and an optional note in X-Description percent encoded. The stored content type is derived from the file extension, so the Content-Type header is ignored. Maximum size 10 MB. Allowed extensions: pdf, png, jpg, jpeg, gif, webp, txt, md, csv, doc, docx, xls, xlsx, ppt, pptx, vsd, vsdx.",
+        "operationId": "uploadRobotDocument",
+        "parameters": [
+          {
+            "name": "robotId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-File-Name",
+            "in": "header",
+            "required": true,
+            "description": "Percent encoded file name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Document-Type",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "PROCESS_DIAGRAM",
+                "SUPPORT_GUIDE",
+                "SPECIFICATION",
+                "OTHER"
+              ],
+              "default": "OTHER"
+            }
+          },
+          {
+            "name": "X-Description",
+            "in": "header",
+            "required": false,
+            "description": "Percent encoded note, up to 1000 characters.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "File stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "413": {
+            "description": "The file exceeds the 10 MB limit"
+          },
+          "415": {
+            "description": "The file extension is not allowed"
+          }
+        }
+      }
+    },
+    "/api/documents/{documentId}/content": {
+      "get": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Download a stored file",
+        "description": "Always answered with Content-Disposition: attachment, so an uploaded file is never rendered by the browser.",
+        "operationId": "getDocumentContent",
+        "parameters": [
+          {
+            "name": "documentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/documents/{documentId}": {
+      "delete": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Delete a stored file",
+        "description": "ADMIN only. Removes the metadata and the bytes together.",
+        "operationId": "deleteRobotDocument",
+        "parameters": [
+          {
+            "name": "documentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/robots/{robotId}/suggestions": {
+      "get": {
+        "tags": [
+          "Suggestions"
+        ],
+        "summary": "List improvement requests for one robot",
+        "description": "Open items first, newest at the top of each group.",
+        "operationId": "getRobotSuggestions",
+        "parameters": [
+          {
+            "name": "robotId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Suggestions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Suggestions"
+        ],
+        "summary": "Raise an improvement request",
+        "description": "ADMIN or OPERATOR. The new item starts open at the top of the list.",
+        "operationId": "createRobotSuggestion",
+        "parameters": [
+          {
+            "name": "robotId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "title"
+                ],
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "maxLength": 300
+                  },
+                  "details": {
+                    "type": "string",
+                    "maxLength": 4000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Suggestion created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/suggestions/{suggestionId}": {
+      "patch": {
+        "tags": [
+          "Suggestions"
+        ],
+        "summary": "Mark an improvement request implemented or reopen it",
+        "description": "ADMIN only. Setting isDone records who completed it and when; clearing it wipes both fields again.",
+        "operationId": "setRobotSuggestionDone",
+        "parameters": [
+          {
+            "name": "suggestionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "isDone"
+                ],
+                "properties": {
+                  "isDone": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Suggestion updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Suggestions"
+        ],
+        "summary": "Remove an improvement request",
+        "description": "ADMIN only.",
+        "operationId": "deleteRobotSuggestion",
+        "parameters": [
+          {
+            "name": "suggestionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Suggestion removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -970,6 +1415,190 @@
         "type": "object",
         "required": ["error"],
         "properties": { "error": { "type": "string" } }
+      },
+      "RobotDocument": {
+        "type": "object",
+        "required": [
+          "documentId",
+          "robotId",
+          "documentType",
+          "fileName",
+          "contentType",
+          "byteSize",
+          "createdAt"
+        ],
+        "properties": {
+          "documentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "robotId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "documentType": {
+            "type": "string",
+            "enum": [
+              "PROCESS_DIAGRAM",
+              "SUPPORT_GUIDE",
+              "SPECIFICATION",
+              "OTHER"
+            ]
+          },
+          "fileName": {
+            "type": "string",
+            "maxLength": 255,
+            "example": "Процессын диаграм.pdf"
+          },
+          "contentType": {
+            "type": "string",
+            "example": "application/pdf"
+          },
+          "byteSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10485760
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "uploadedBy": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "uploadedByName": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "DocumentListResponse": {
+        "type": "object",
+        "required": [
+          "generatedAt",
+          "documents"
+        ],
+        "properties": {
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RobotDocument"
+            }
+          }
+        }
+      },
+      "DocumentResponse": {
+        "type": "object",
+        "required": [
+          "document"
+        ],
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/RobotDocument"
+          }
+        }
+      },
+      "RobotSuggestion": {
+        "type": "object",
+        "required": [
+          "suggestionId",
+          "robotId",
+          "title",
+          "isDone",
+          "createdAt"
+        ],
+        "properties": {
+          "suggestionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "robotId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "details": {
+            "type": "string",
+            "nullable": true
+          },
+          "isDone": {
+            "type": "boolean"
+          },
+          "createdBy": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "createdByName": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completedBy": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "completedByName": {
+            "type": "string",
+            "nullable": true
+          },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "SuggestionListResponse": {
+        "type": "object",
+        "required": [
+          "generatedAt",
+          "suggestions"
+        ],
+        "properties": {
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RobotSuggestion"
+            }
+          }
+        }
+      },
+      "SuggestionResponse": {
+        "type": "object",
+        "required": [
+          "suggestion"
+        ],
+        "properties": {
+          "suggestion": {
+            "$ref": "#/components/schemas/RobotSuggestion"
+          }
+        }
       }
     }
   }

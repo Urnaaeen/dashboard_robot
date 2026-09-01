@@ -100,6 +100,17 @@ const state = {
   lastUpdated: null,
   refreshTimer: null,
   machineOfflineSeconds: 180,
+  robotDetail: {
+    robotId: "",
+    documents: [],
+    suggestions: [],
+    loading: false,
+    error: "",
+    uploading: false,
+    documentType: "PROCESS_DIAGRAM",
+    suggestionDraft: "",
+    requestId: 0,
+  },
 };
 
 const statusMeta = {
@@ -128,6 +139,9 @@ const icons = {
   robot: '<svg viewBox="0 0 24 24" focusable="false"><path d="M12 8V4m-5 8h10M7 16h10M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z"/><path d="M9 12h.01M15 12h.01"/></svg>',
   machine: '<svg viewBox="0 0 24 24" focusable="false"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
   x: '<svg viewBox="0 0 24 24" focusable="false"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  file: '<svg viewBox="0 0 24 24" focusable="false"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" focusable="false"><path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>',
+  upload: '<svg viewBox="0 0 24 24" focusable="false"><path d="M12 16V4m-5 5 5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>',
 };
 
 const app = document.querySelector("#app");
@@ -269,6 +283,10 @@ function apiFetch(path, options = {}) {
 
 function canAdmin() {
   return state.currentUser?.role === "ADMIN";
+}
+
+function canOperate() {
+  return ["ADMIN", "OPERATOR"].includes(state.currentUser?.role);
 }
 
 function userInitials() {
@@ -508,6 +526,22 @@ function kpis(filtered) {
 }
 
 function render() {
+  // Every re-render replaces the DOM. Without this the 30 second refresh would
+  // pull the caret out of the suggestion box while someone is still typing.
+  const draft = document.querySelector("[data-suggestion-draft]");
+  const caret = draft && document.activeElement === draft ? draft.selectionStart : null;
+  renderView();
+  if (caret === null) {
+    return;
+  }
+  const restored = document.querySelector("[data-suggestion-draft]");
+  if (restored) {
+    restored.focus();
+    restored.setSelectionRange(caret, caret);
+  }
+}
+
+function renderView() {
   updateChrome();
   updateNav();
 
@@ -524,6 +558,7 @@ function render() {
     return;
   }
   if (state.view === "detail") {
+    ensureRobotDetailPanels();
     app.innerHTML = renderDetailView();
     return;
   }
@@ -932,7 +967,7 @@ function renderDetailView() {
   const desktopLaunchUrl = getPowerAutomateLaunchUrl(robot, desktopUrl);
 
   return `
-    <div class="detail-layout detail-layout-single">
+    <div class="detail-layout">
       <section class="detail-panel">
         <div class="detail-hero">
           <button class="ghost-button" type="button" data-action="back">${icons.back}<span>Back</span></button>
@@ -972,8 +1007,322 @@ function renderDetailView() {
           ${renderEventList(runEvents)}
         </div>
       </section>
+      ${renderRobotSidePanels()}
     </div>
     ${state.powerAutomateEditorRobotId ? renderPowerAutomateModal(robot) : ""}
+  `;
+}
+
+const DOCUMENT_TYPE_LABELS = {
+  PROCESS_DIAGRAM: "Process diagram",
+  SUPPORT_GUIDE: "Support guide",
+  SPECIFICATION: "Specification",
+  OTHER: "Other",
+};
+
+function ensureRobotDetailPanels() {
+  const robotId = state.selectedRobotId;
+  if (!robotId || state.robotDetail.robotId === robotId) {
+    return;
+  }
+  state.robotDetail = {
+    ...state.robotDetail,
+    robotId,
+    documents: [],
+    suggestions: [],
+    loading: true,
+    error: "",
+  };
+  loadRobotDetailPanels(robotId);
+}
+
+async function loadRobotDetailPanels(robotId, { silent = false } = {}) {
+  const requestId = state.robotDetail.requestId + 1;
+  state.robotDetail.requestId = requestId;
+  if (!silent) {
+    state.robotDetail.loading = true;
+  }
+  try {
+    const [documentPayload, suggestionPayload] = await Promise.all([
+      apiFetch(`/api/robots/${encodeURIComponent(robotId)}/documents`),
+      apiFetch(`/api/robots/${encodeURIComponent(robotId)}/suggestions`),
+    ]);
+    // A slower earlier request must not overwrite a newer robot's panels.
+    if (state.robotDetail.requestId !== requestId || state.selectedRobotId !== robotId) {
+      return;
+    }
+    state.robotDetail.documents = documentPayload.documents || [];
+    state.robotDetail.suggestions = suggestionPayload.suggestions || [];
+    state.robotDetail.error = "";
+  } catch (error) {
+    if (state.robotDetail.requestId !== requestId) {
+      return;
+    }
+    state.robotDetail.error = error.message;
+  } finally {
+    if (state.robotDetail.requestId === requestId) {
+      state.robotDetail.loading = false;
+      if (state.view === "detail") {
+        render();
+      }
+    }
+  }
+}
+
+async function uploadRobotDocument(file) {
+  const robotId = state.selectedRobotId;
+  if (!robotId || !file) {
+    return;
+  }
+  state.robotDetail.uploading = true;
+  render();
+  try {
+    // The file is sent as the raw request body. Multipart parsing would mean a
+    // new dependency or a hand written parser, and base64 in JSON would inflate
+    // every upload by a third for no benefit.
+    const response = await fetch(`/api/robots/${encodeURIComponent(robotId)}/documents`, {
+      method: "POST",
+      headers: {
+        "Content-Type": file.type || "application/octet-stream",
+        "X-File-Name": encodeURIComponent(file.name),
+        "X-Document-Type": state.robotDetail.documentType,
+      },
+      body: file,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401) {
+      const next = `${window.location.pathname}${window.location.search}`;
+      window.location.replace(`/login?reason=session&next=${encodeURIComponent(next)}`);
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(payload.error || `Upload failed: ${response.status}`);
+    }
+    showToast(`${file.name} uploaded.`);
+    await loadRobotDetailPanels(robotId, { silent: true });
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.robotDetail.uploading = false;
+    render();
+  }
+}
+
+async function deleteRobotDocument(documentId, fileName) {
+  if (!window.confirm(`Delete ${fileName}? This cannot be undone.`)) {
+    return;
+  }
+  try {
+    await apiFetch(`/api/documents/${encodeURIComponent(documentId)}`, { method: "DELETE" });
+    showToast("File deleted.");
+    await loadRobotDetailPanels(state.selectedRobotId, { silent: true });
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function addRobotSuggestion() {
+  const title = state.robotDetail.suggestionDraft.trim();
+  if (!title) {
+    showToast("Write the suggestion first.", "error");
+    return;
+  }
+  try {
+    await apiFetch(`/api/robots/${encodeURIComponent(state.selectedRobotId)}/suggestions`, {
+      method: "POST",
+      body: JSON.stringify({ title }),
+    });
+    state.robotDetail.suggestionDraft = "";
+    showToast("Suggestion added.");
+    await loadRobotDetailPanels(state.selectedRobotId, { silent: true });
+    document.querySelector("[data-suggestion-draft]")?.focus();
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function setSuggestionDone(suggestionId, isDone) {
+  try {
+    await apiFetch(`/api/suggestions/${encodeURIComponent(suggestionId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ isDone }),
+    });
+    await loadRobotDetailPanels(state.selectedRobotId, { silent: true });
+  } catch (error) {
+    showToast(error.message, "error");
+    render();
+  }
+}
+
+async function deleteRobotSuggestion(suggestionId) {
+  try {
+    await apiFetch(`/api/suggestions/${encodeURIComponent(suggestionId)}`, { method: "DELETE" });
+    showToast("Suggestion removed.");
+    await loadRobotDetailPanels(state.selectedRobotId, { silent: true });
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes || 0);
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(0)} KB`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderRobotSidePanels() {
+  return `
+    <aside class="detail-side">
+      ${renderDocumentPanel()}
+      ${renderSuggestionPanel()}
+    </aside>
+  `;
+}
+
+function renderDocumentPanel() {
+  const documents = state.robotDetail.documents;
+  const countLabel = state.robotDetail.loading
+    ? "Loading..."
+    : `${documents.length} ${documents.length === 1 ? "file" : "files"}`;
+  return `
+    <section class="data-panel side-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Documents</h2>
+          <p>${escapeHtml(countLabel)}</p>
+        </div>
+      </div>
+      ${canOperate() ? renderDocumentUpload() : ""}
+      ${renderDocumentList(documents)}
+    </section>
+  `;
+}
+
+function renderDocumentUpload() {
+  const types = ["PROCESS_DIAGRAM", "SUPPORT_GUIDE", "SPECIFICATION", "OTHER"];
+  return `
+    <div class="upload-row">
+      <select data-document-type aria-label="Document type" ${state.robotDetail.uploading ? "disabled" : ""}>
+        ${types
+          .map(
+            (type) =>
+              `<option value="${type}" ${selected(type, state.robotDetail.documentType)}>${escapeHtml(DOCUMENT_TYPE_LABELS[type])}</option>`,
+          )
+          .join("")}
+      </select>
+      <input type="file" data-document-file hidden />
+      <button class="secondary-button" type="button" data-action="pick-document" ${state.robotDetail.uploading ? "disabled" : ""}>
+        ${icons.upload}<span>${state.robotDetail.uploading ? "Uploading..." : "Add file"}</span>
+      </button>
+    </div>
+  `;
+}
+
+function renderDocumentList(documents) {
+  if (state.robotDetail.loading && !documents.length) {
+    return '<p class="side-empty">Loading files...</p>';
+  }
+  if (!documents.length) {
+    return '<p class="side-empty">No files yet. Add the process diagram or the support guide.</p>';
+  }
+  return `<ul class="side-list">${documents.map(renderDocumentRow).join("")}</ul>`;
+}
+
+function renderDocumentRow(item) {
+  const meta = [
+    DOCUMENT_TYPE_LABELS[item.documentType] || item.documentType,
+    formatFileSize(item.byteSize),
+    item.uploadedByName || "Unknown",
+    formatDateTime(item.createdAt),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return `
+    <li class="side-item">
+      <span class="side-item-icon" aria-hidden="true">${icons.file}</span>
+      <div class="side-item-body">
+        <a class="side-item-title" href="/api/documents/${encodeURIComponent(item.documentId)}/content" download>${escapeHtml(item.fileName)}</a>
+        <span class="side-item-meta">${escapeHtml(meta)}</span>
+        ${item.description ? `<span class="side-item-meta">${escapeHtml(item.description)}</span>` : ""}
+      </div>
+      ${
+        canAdmin()
+          ? `<button class="icon-button" type="button" data-action="delete-document" data-document-id="${escapeHtml(item.documentId)}" data-file-name="${escapeHtml(item.fileName)}" title="Delete file" aria-label="Delete file">${icons.trash}</button>`
+          : ""
+      }
+    </li>
+  `;
+}
+
+function renderSuggestionPanel() {
+  const suggestions = state.robotDetail.suggestions;
+  const openCount = suggestions.filter((item) => !item.isDone).length;
+  const countLabel = state.robotDetail.loading
+    ? "Loading..."
+    : `${openCount} open of ${suggestions.length}`;
+  return `
+    <section class="data-panel side-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Suggestions</h2>
+          <p>${escapeHtml(countLabel)}</p>
+        </div>
+      </div>
+      ${
+        canOperate()
+          ? `
+      <form class="suggestion-form" data-form="suggestion">
+        <textarea data-suggestion-draft rows="2" maxlength="300" placeholder="What should be improved on this robot?">${escapeHtml(state.robotDetail.suggestionDraft)}</textarea>
+        <button class="primary-button" type="submit">${icons.add}<span>Add</span></button>
+      </form>`
+          : ""
+      }
+      ${renderSuggestionList(suggestions)}
+    </section>
+  `;
+}
+
+function renderSuggestionList(suggestions) {
+  if (state.robotDetail.loading && !suggestions.length) {
+    return '<p class="side-empty">Loading suggestions...</p>';
+  }
+  if (!suggestions.length) {
+    return '<p class="side-empty">No suggestions yet.</p>';
+  }
+  return `<ul class="side-list suggestion-list">${suggestions.map(renderSuggestionRow).join("")}</ul>`;
+}
+
+function renderSuggestionRow(suggestion) {
+  const meta = suggestion.isDone
+    ? `Done by ${suggestion.completedByName || "Unknown"} · ${formatDateTime(suggestion.completedAt)}`
+    : `${suggestion.createdByName || "Unknown"} · ${formatDateTime(suggestion.createdAt)}`;
+  return `
+    <li class="side-item suggestion-item ${suggestion.isDone ? "is-done" : ""}">
+      <input
+        class="suggestion-check"
+        type="checkbox"
+        data-suggestion-check
+        data-suggestion-id="${escapeHtml(suggestion.suggestionId)}"
+        ${suggestion.isDone ? "checked" : ""}
+        ${canAdmin() ? "" : "disabled"}
+        aria-label="Mark as implemented"
+      />
+      <div class="side-item-body">
+        <span class="side-item-title">${escapeHtml(suggestion.title)}</span>
+        ${suggestion.details ? `<span class="side-item-meta">${escapeHtml(suggestion.details)}</span>` : ""}
+        <span class="side-item-meta">${escapeHtml(meta)}</span>
+      </div>
+      ${
+        canAdmin()
+          ? `<button class="icon-button" type="button" data-action="delete-suggestion" data-suggestion-id="${escapeHtml(suggestion.suggestionId)}" title="Remove suggestion" aria-label="Remove suggestion">${icons.trash}</button>`
+          : ""
+      }
+    </li>
   `;
 }
 
@@ -1717,6 +2066,20 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
+    if (action === "pick-document") {
+      document.querySelector("[data-document-file]")?.click();
+      return;
+    }
+
+    if (action === "delete-document") {
+      await deleteRobotDocument(actionTarget.dataset.documentId, actionTarget.dataset.fileName);
+      return;
+    }
+
+    if (action === "delete-suggestion") {
+      await deleteRobotSuggestion(actionTarget.dataset.suggestionId);
+      return;
+    }
   }
 
   const viewTarget = event.target.closest("[data-view]");
@@ -1730,6 +2093,13 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("submit", async (event) => {
+  const suggestionForm = event.target.closest('[data-form="suggestion"]');
+  if (suggestionForm) {
+    event.preventDefault();
+    await addRobotSuggestion();
+    return;
+  }
+
   const addRobotForm = event.target.closest('[data-form="add-robot"]');
   if (addRobotForm) {
     event.preventDefault();
@@ -1745,6 +2115,28 @@ document.addEventListener("submit", async (event) => {
 });
 
 document.addEventListener("change", async (event) => {
+  const documentFile = event.target.closest("[data-document-file]");
+  if (documentFile) {
+    const file = documentFile.files && documentFile.files[0];
+    documentFile.value = "";
+    if (file) {
+      await uploadRobotDocument(file);
+    }
+    return;
+  }
+
+  const documentType = event.target.closest("[data-document-type]");
+  if (documentType) {
+    state.robotDetail.documentType = documentType.value;
+    return;
+  }
+
+  const suggestionCheck = event.target.closest("[data-suggestion-check]");
+  if (suggestionCheck) {
+    await setSuggestionDone(suggestionCheck.dataset.suggestionId, suggestionCheck.checked);
+    return;
+  }
+
   const robotActive = event.target.closest("[data-robot-active]");
   if (robotActive) {
     await handleRobotActiveToggle(robotActive);
@@ -1786,6 +2178,12 @@ document.addEventListener("input", (event) => {
   const addRobotForm = event.target.closest('[data-form="add-robot"]');
   if (addRobotForm && event.target.name) {
     updateAddRobotDraft(event.target.name, event.target.value);
+    return;
+  }
+
+  const suggestionDraft = event.target.closest("[data-suggestion-draft]");
+  if (suggestionDraft) {
+    state.robotDetail.suggestionDraft = suggestionDraft.value;
     return;
   }
 
@@ -1863,6 +2261,9 @@ async function initialize() {
         loadHistory({ silent: true });
       } else {
         loadData({ silent: true });
+        if (state.view === "detail" && state.selectedRobotId) {
+          loadRobotDetailPanels(state.selectedRobotId, { silent: true });
+        }
       }
     }, 30000);
   } catch (error) {

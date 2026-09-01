@@ -33,6 +33,39 @@ const STATUS = new Set([
 ]);
 const EVENT_TYPE = new Set(["INFO", "WARNING", "ERROR"]);
 const LOGGER_ROLES = new Set(["ADMIN", "OPERATOR"]);
+const ADMIN_ONLY = new Set(["ADMIN"]);
+const CONTRIBUTOR_ROLES = new Set(["ADMIN", "OPERATOR"]);
+const DOCUMENT_TYPES = new Set([
+  "PROCESS_DIAGRAM",
+  "SUPPORT_GUIDE",
+  "SPECIFICATION",
+  "OTHER",
+]);
+
+// Uploads are classified by file extension rather than by the Content-Type the
+// browser claims. The client value is unreliable across browsers and, more
+// importantly, it is attacker controlled; deriving the type here means a stored
+// file can only ever be served back as something from this list. SVG and HTML
+// are deliberately absent because both can carry script.
+const DOCUMENT_EXTENSIONS = new Map([
+  [".pdf", "application/pdf"],
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".gif", "image/gif"],
+  [".webp", "image/webp"],
+  [".txt", "text/plain"],
+  [".md", "text/plain"],
+  [".csv", "text/csv"],
+  [".doc", "application/msword"],
+  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  [".xls", "application/vnd.ms-excel"],
+  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  [".ppt", "application/vnd.ms-powerpoint"],
+  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  [".vsd", "application/vnd.visio"],
+  [".vsdx", "application/vnd.ms-visio.drawing"],
+]);
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -111,6 +144,76 @@ function parseBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+function readRawBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(
+          httpError(
+            `The file exceeds the ${Math.floor(maxBytes / (1024 * 1024))} MB limit.`,
+            413,
+          ),
+        );
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+function readUploadFileName(req) {
+  const raw = String(req.headers["x-file-name"] || "");
+  if (!raw) {
+    throw httpError("The X-File-Name header is required.", 400);
+  }
+  let decoded;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch (error) {
+    throw httpError("X-File-Name must be percent encoded.", 400);
+  }
+  // Keep the basename only, and drop control characters, so nothing in the name
+  // can escape a directory or break a response header.
+  const fileName = decoded
+    .split(/[\\/]/)
+    .pop()
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim();
+  if (!fileName || fileName === "." || fileName === "..") {
+    throw httpError("The file name is not valid.", 400);
+  }
+  if (fileName.length > 255) {
+    throw httpError("The file name cannot exceed 255 characters.", 400);
+  }
+  return fileName;
+}
+
+function resolveDocumentContentType(fileName) {
+  const dot = fileName.lastIndexOf(".");
+  const extension = dot > 0 ? fileName.slice(dot).toLowerCase() : "";
+  const contentType = DOCUMENT_EXTENSIONS.get(extension);
+  if (!contentType) {
+    throw httpError(
+      `Unsupported file type. Allowed: ${[...DOCUMENT_EXTENSIONS.keys()].join(", ")}`,
+      415,
+    );
+  }
+  return contentType;
+}
+
+function contentDispositionAttachment(fileName) {
+  // Mongolian file names are not Latin-1, so the quoted form gets an ASCII
+  // fallback and the real name travels in the RFC 5987 parameter.
+  const asciiFallback = fileName.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }
 
 function requireFields(payload, fields) {
@@ -509,6 +612,127 @@ async function handleApi(req, res, pathname, searchParams) {
     validatePowerAutomateUrls(payload);
     const robot = await database.updateRobotPowerAutomate(robotId, payload);
     sendJson(res, 200, { robot });
+    return true;
+  }
+
+  const robotDocumentsMatch = pathname.match(/^\/api\/robots\/([^/]+)\/documents$/);
+  if (req.method === "GET" && robotDocumentsMatch) {
+    await requireSession(req);
+    const robotId = requireUuid(robotDocumentsMatch[1], "robotId");
+    const documents = await database.getRobotDocuments(robotId);
+    sendJson(res, 200, { generatedAt: nowIso(), documents });
+    return true;
+  }
+
+  if (req.method === "POST" && robotDocumentsMatch) {
+    assertSameOrigin(req);
+    const user = await requireRole(req, CONTRIBUTOR_ROLES);
+    const robotId = requireUuid(robotDocumentsMatch[1], "robotId");
+    const fileName = readUploadFileName(req);
+    const contentType = resolveDocumentContentType(fileName);
+    const documentType = String(req.headers["x-document-type"] || "OTHER").toUpperCase();
+    if (!DOCUMENT_TYPES.has(documentType)) {
+      throw httpError(
+        `documentType must be one of: ${[...DOCUMENT_TYPES].join(", ")}`,
+        400,
+      );
+    }
+    let description = "";
+    try {
+      description = decodeURIComponent(String(req.headers["x-description"] || "")).slice(0, 1000);
+    } catch (error) {
+      throw httpError("X-Description must be percent encoded.", 400);
+    }
+    const content = await readRawBody(req, database.DOCUMENT_MAX_BYTES);
+    const document = await database.createRobotDocument({
+      robotId,
+      documentType,
+      fileName,
+      contentType,
+      description,
+      content,
+      uploadedBy: user.userId,
+      uploadedByName: user.displayName || user.username,
+    });
+    sendJson(res, 201, { document });
+    return true;
+  }
+
+  const documentContentMatch = pathname.match(/^\/api\/documents\/([^/]+)\/content$/);
+  if (req.method === "GET" && documentContentMatch) {
+    await requireSession(req);
+    const documentId = requireUuid(documentContentMatch[1], "documentId");
+    const document = await database.getRobotDocumentContent(documentId);
+    // Always an attachment. Nothing uploaded here is ever rendered in the
+    // browser, which keeps a stored file from becoming stored XSS.
+    res.writeHead(200, {
+      ...securityHeaders(),
+      "Content-Type": document.contentType,
+      "Content-Length": document.content.length,
+      "Content-Disposition": contentDispositionAttachment(document.fileName),
+      "Cache-Control": "no-store",
+    });
+    res.end(document.content);
+    return true;
+  }
+
+  const documentMatch = pathname.match(/^\/api\/documents\/([^/]+)$/);
+  if (req.method === "DELETE" && documentMatch) {
+    assertSameOrigin(req);
+    await requireRole(req, ADMIN_ONLY);
+    const documentId = requireUuid(documentMatch[1], "documentId");
+    const document = await database.deleteRobotDocument(documentId);
+    sendJson(res, 200, { document });
+    return true;
+  }
+
+  const robotSuggestionsMatch = pathname.match(/^\/api\/robots\/([^/]+)\/suggestions$/);
+  if (req.method === "GET" && robotSuggestionsMatch) {
+    await requireSession(req);
+    const robotId = requireUuid(robotSuggestionsMatch[1], "robotId");
+    const suggestions = await database.getRobotSuggestions(robotId);
+    sendJson(res, 200, { generatedAt: nowIso(), suggestions });
+    return true;
+  }
+
+  if (req.method === "POST" && robotSuggestionsMatch) {
+    assertSameOrigin(req);
+    const user = await requireRole(req, CONTRIBUTOR_ROLES);
+    const robotId = requireUuid(robotSuggestionsMatch[1], "robotId");
+    const payload = await parseBody(req);
+    requireFields(payload, ["title"]);
+    const suggestion = await database.createRobotSuggestion({
+      robotId,
+      title: String(payload.title).slice(0, 300),
+      details: payload.details ? String(payload.details).slice(0, 4000) : null,
+      createdBy: user.userId,
+      createdByName: user.displayName || user.username,
+    });
+    sendJson(res, 201, { suggestion });
+    return true;
+  }
+
+  const suggestionMatch = pathname.match(/^\/api\/suggestions\/([^/]+)$/);
+  if (req.method === "PATCH" && suggestionMatch) {
+    assertSameOrigin(req);
+    const user = await requireRole(req, ADMIN_ONLY);
+    const suggestionId = requireUuid(suggestionMatch[1], "suggestionId");
+    const payload = await parseBody(req);
+    const isDone = requireBoolean(payload, "isDone");
+    const suggestion = await database.setRobotSuggestionDone(suggestionId, isDone, {
+      userId: user.userId,
+      displayName: user.displayName || user.username,
+    });
+    sendJson(res, 200, { suggestion });
+    return true;
+  }
+
+  if (req.method === "DELETE" && suggestionMatch) {
+    assertSameOrigin(req);
+    await requireRole(req, ADMIN_ONLY);
+    const suggestionId = requireUuid(suggestionMatch[1], "suggestionId");
+    const suggestion = await database.deleteRobotSuggestion(suggestionId);
+    sendJson(res, 200, { suggestion });
     return true;
   }
 
