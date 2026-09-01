@@ -42,8 +42,10 @@ function mapRobot(row) {
     cloudFlowId: row.cloud_flow_id,
     cloudFlowName: row.cloud_flow_name,
     cloudTriggerName: row.cloud_trigger_name,
+    cloudFlowUrl: row.cloud_flow_url,
     desktopFlowId: row.desktop_flow_id,
     desktopFlowName: row.desktop_flow_name,
+    desktopFlowUrl: row.desktop_flow_url,
     powerAutomateUrl: row.power_automate_url,
     accountName: row.account_name,
     machineId: row.machine_id,
@@ -305,7 +307,6 @@ async function getDashboardData() {
     pool.query(`
       SELECT *
       FROM rpa_robot
-      WHERE is_active = TRUE
       ORDER BY robot_name
     `),
     pool.query(`
@@ -318,7 +319,6 @@ async function getDashboardData() {
         ORDER BY robot_run.started_at DESC
         LIMIT 1
       ) latest_run ON TRUE
-      WHERE robot.is_active = TRUE
       ORDER BY latest_run.started_at DESC
     `),
     getMachines(),
@@ -490,27 +490,30 @@ async function getRunHistory({ search, status, startedFrom, startedTo, limit }) 
   };
 }
 
-function buildPowerAutomateUrl(payload) {
-  const explicitUrl = nullable(payload.powerAutomateUrl);
-  if (explicitUrl) {
-    return explicitUrl;
-  }
-
+function buildCloudFlowUrl(payload) {
+  const explicitUrl = nullable(payload.cloudFlowUrl ?? payload.powerAutomateUrl);
+  if (explicitUrl) return explicitUrl;
   const environmentId = nullable(payload.powerAutomateEnvironmentId);
-  if (!environmentId) {
-    return null;
-  }
-  if (nullable(payload.desktopFlowId)) {
-    return `https://make.powerautomate.com/manage/environments/${environmentId}/uiflows/${payload.desktopFlowId}/details`;
-  }
-  if (nullable(payload.cloudFlowId)) {
-    return `https://make.powerautomate.com/manage/environments/${environmentId}/flows/${payload.cloudFlowId}/details`;
-  }
-  return null;
+  const cloudFlowId = nullable(payload.cloudFlowId);
+  return environmentId && cloudFlowId
+    ? `https://make.powerautomate.com/manage/environments/${environmentId}/flows/${cloudFlowId}/details`
+    : null;
+}
+
+function buildDesktopFlowUrl(payload) {
+  const explicitUrl = nullable(payload.desktopFlowUrl);
+  if (explicitUrl) return explicitUrl;
+  const environmentId = nullable(payload.powerAutomateEnvironmentId);
+  const desktopFlowId = nullable(payload.desktopFlowId);
+  return environmentId && desktopFlowId
+    ? `https://make.powerautomate.com/manage/environments/${environmentId}/uiflows/${desktopFlowId}/details`
+    : null;
 }
 
 async function saveRobot(executor, payload, robotCode) {
   const machine = await upsertMachine(executor, payload);
+  const cloudFlowUrl = buildCloudFlowUrl(payload);
+  const desktopFlowUrl = buildDesktopFlowUrl(payload);
   const values = [
     robotCode,
     String(payload.robotName || "").trim(),
@@ -519,9 +522,11 @@ async function saveRobot(executor, payload, robotCode) {
     nullable(payload.cloudFlowId),
     nullable(payload.cloudFlowName),
     nullable(payload.cloudTriggerName),
+    cloudFlowUrl,
     nullable(payload.desktopFlowId),
     nullable(payload.desktopFlowName),
-    buildPowerAutomateUrl(payload),
+    desktopFlowUrl,
+    cloudFlowUrl || desktopFlowUrl,
     nullable(payload.accountName ?? payload.accountLabel),
     machine.id,
     nullable(payload.machineName),
@@ -536,13 +541,14 @@ async function saveRobot(executor, payload, robotCode) {
       `
         INSERT INTO rpa_robot (
           robot_code, robot_name, robot_type, power_automate_environment_id,
-          cloud_flow_id, cloud_flow_name, cloud_trigger_name, desktop_flow_id,
-          desktop_flow_name, power_automate_url, account_name, machine_name,
+          cloud_flow_id, cloud_flow_name, cloud_trigger_name, cloud_flow_url,
+          desktop_flow_id, desktop_flow_name, desktop_flow_url,
+          power_automate_url, account_name, machine_name,
           machine_ip, anydesk_id, max_expected_run_minutes, is_active, machine_id
         )
         VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9,
-          $10, $11, $13, $14, $15, $16, $17, $12
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+          $11, $12, $13, $15, $16, $17, $18, $19, $14
         )
         RETURNING *
       `,
@@ -574,6 +580,61 @@ async function createRobot(payload) {
     const generatedCode = await generateRobotCode(client);
     return saveRobot(client, payload, generatedCode);
   });
+}
+
+async function updateRobotActive(robotId, isActive) {
+  const result = await pool.query(
+    `
+      UPDATE rpa_robot
+      SET is_active = $2, updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [robotId, isActive],
+  );
+  if (!result.rowCount) {
+    throw httpError(`Robot not found: ${robotId}`, 404);
+  }
+  return mapRobot(result.rows[0]);
+}
+
+async function updateRobotPowerAutomate(robotId, payload) {
+  const cloudFlowUrl = buildCloudFlowUrl(payload);
+  const desktopFlowUrl = buildDesktopFlowUrl(payload);
+  const result = await pool.query(
+    `
+      UPDATE rpa_robot
+      SET
+        power_automate_environment_id = $2,
+        cloud_flow_id = $3,
+        cloud_flow_name = $4,
+        cloud_flow_url = $5,
+        desktop_flow_id = $6,
+        desktop_flow_name = $7,
+        desktop_flow_url = $8,
+        power_automate_url = $9,
+        account_name = $10,
+        updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [
+      robotId,
+      nullable(payload.powerAutomateEnvironmentId),
+      nullable(payload.cloudFlowId),
+      nullable(payload.cloudFlowName),
+      cloudFlowUrl,
+      nullable(payload.desktopFlowId),
+      nullable(payload.desktopFlowName),
+      desktopFlowUrl,
+      cloudFlowUrl || desktopFlowUrl,
+      nullable(payload.accountName),
+    ],
+  );
+  if (!result.rowCount) {
+    throw httpError(`Robot not found: ${robotId}`, 404);
+  }
+  return mapRobot(result.rows[0]);
 }
 
 async function generateInputReference(client, startedAt) {
@@ -615,13 +676,16 @@ async function startRobotRun(payload) {
   return withTransaction(async (client) => {
     const robotCode = String(payload.robotCode || "").trim();
     const robotResult = await client.query(
-      "SELECT * FROM rpa_robot WHERE robot_code = $1 AND is_active = TRUE",
+      "SELECT * FROM rpa_robot WHERE robot_code = $1",
       [robotCode],
     );
     if (!robotResult.rowCount) {
       throw httpError(`Robot not found: ${robotCode}`, 404);
     }
     const robot = robotResult.rows[0];
+    if (!robot.is_active) {
+      throw httpError(`Robot is turned off: ${robotCode}`, 409);
+    }
     const inputReference = await generateInputReference(client, payload.startedAt);
     const runResult = await client.query(
       `
@@ -845,4 +909,6 @@ module.exports = {
   startRobotRun,
   translateDatabaseError,
   updateRunStatus,
+  updateRobotActive,
+  updateRobotPowerAutomate,
 };

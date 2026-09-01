@@ -51,8 +51,10 @@ CREATE TABLE IF NOT EXISTS rpa_robot (
     cloud_flow_id VARCHAR(200),
     cloud_flow_name VARCHAR(255),
     cloud_trigger_name VARCHAR(150),
+    cloud_flow_url TEXT,
     desktop_flow_id VARCHAR(200),
     desktop_flow_name VARCHAR(255),
+    desktop_flow_url TEXT,
     power_automate_url TEXT,
     account_name VARCHAR(150),
     machine_id UUID REFERENCES rpa_machine(id),
@@ -70,6 +72,35 @@ CREATE TABLE IF NOT EXISTS rpa_robot (
         max_expected_run_minutes > 0
     )
 );
+
+ALTER TABLE rpa_robot
+    ADD COLUMN IF NOT EXISTS cloud_flow_url TEXT;
+
+ALTER TABLE rpa_robot
+    ADD COLUMN IF NOT EXISTS desktop_flow_url TEXT;
+
+UPDATE rpa_robot
+SET
+    cloud_flow_url = COALESCE(
+        cloud_flow_url,
+        CASE
+            WHEN power_automate_environment_id IS NOT NULL AND cloud_flow_id IS NOT NULL
+                THEN 'https://make.powerautomate.com/manage/environments/' ||
+                    power_automate_environment_id || '/flows/' || cloud_flow_id || '/details'
+            WHEN power_automate_url LIKE '%/flows/%' THEN power_automate_url
+            ELSE NULL
+        END
+    ),
+    desktop_flow_url = COALESCE(
+        desktop_flow_url,
+        CASE
+            WHEN power_automate_environment_id IS NOT NULL AND desktop_flow_id IS NOT NULL
+                THEN 'https://make.powerautomate.com/manage/environments/' ||
+                    power_automate_environment_id || '/uiflows/' || desktop_flow_id || '/details'
+            WHEN power_automate_url LIKE '%/uiflows/%' THEN power_automate_url
+            ELSE NULL
+        END
+    );
 
 DO $$
 BEGIN

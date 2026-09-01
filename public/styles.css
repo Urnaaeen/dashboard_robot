@@ -619,6 +619,12 @@ tbody tr:hover {
   border-color: #f5cf74;
 }
 
+.status-disabled {
+  color: #394452;
+  background: #eef1f4;
+  border-color: #cbd2da;
+}
+
 .truncate {
   max-width: 250px;
   overflow: hidden;
@@ -637,6 +643,88 @@ tbody tr:hover {
 
 .detail-actions {
   margin-top: 16px;
+}
+
+.detail-layout-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.detail-status-stack {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-direction: column;
+}
+
+.robot-active-toggle {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.robot-active-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.toggle-track {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  flex: 0 0 44px;
+  border: 1px solid #9aa4b2;
+  border-radius: 999px;
+  background: #cbd2da;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.toggle-track span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.28);
+  transition: transform 160ms ease;
+}
+
+.robot-active-toggle input:checked + .toggle-track {
+  border-color: var(--green);
+  background: var(--green);
+}
+
+.robot-active-toggle input:checked + .toggle-track span {
+  transform: translateX(20px);
+}
+
+.robot-active-toggle input:focus-visible + .toggle-track {
+  outline: 3px solid rgba(37, 99, 235, 0.22);
+  outline-offset: 2px;
+}
+
+.robot-active-toggle input:disabled + .toggle-track {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.toggle-label {
+  min-width: 22px;
+}
+
+.account-chip {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .primary-button,
@@ -1019,6 +1107,15 @@ tbody tr:hover {
 @media (max-width: 520px) {
   .content {
     padding: 16px 12px 24px;
+  }
+
+  .detail-title-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .detail-status-stack {
+    align-items: flex-start;
   }
 
   .sidebar {

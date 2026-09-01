@@ -132,6 +132,41 @@ function requireRobotCode(payload) {
   return robotCode;
 }
 
+function requireBoolean(payload, field) {
+  requireFields(payload, [field]);
+  if (typeof payload[field] !== "boolean") {
+    throw httpError(`${field} must be true or false.`, 400);
+  }
+  return payload[field];
+}
+
+function requireUuid(value, field) {
+  const normalized = String(value || "").trim();
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (!uuidPattern.test(normalized)) {
+    throw httpError(`${field} must be a valid UUID.`, 400);
+  }
+  return normalized;
+}
+
+function validatePowerAutomateUrls(payload) {
+  for (const field of ["powerAutomateUrl", "cloudFlowUrl", "desktopFlowUrl"]) {
+    const value = String(payload[field] || "").trim();
+    if (!value) continue;
+    if (value.length > 2000) {
+      throw httpError(`${field} cannot exceed 2000 characters.`, 400);
+    }
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.hostname !== "make.powerautomate.com") {
+        throw new Error("unsupported URL");
+      }
+    } catch (error) {
+      throw httpError(`${field} must be an https://make.powerautomate.com URL.`, 400);
+    }
+  }
+}
+
 function parseCookies(req) {
   const cookies = {};
   for (const part of String(req.headers.cookie || "").split(";")) {
@@ -439,7 +474,32 @@ async function handleApi(req, res, pathname, searchParams) {
       "powerAutomateEnvironmentId",
       "machineName",
     ]);
+    validatePowerAutomateUrls(payload);
     const robot = await database.createRobot(payload);
+    sendJson(res, 200, { robot });
+    return true;
+  }
+
+  const robotActiveMatch = pathname.match(/^\/api\/robots\/([^/]+)\/active$/);
+  if (req.method === "PATCH" && robotActiveMatch) {
+    assertSameOrigin(req);
+    await requireRole(req, new Set(["ADMIN"]));
+    const robotId = requireUuid(robotActiveMatch[1], "robotId");
+    const payload = await parseBody(req);
+    const isActive = requireBoolean(payload, "isActive");
+    const robot = await database.updateRobotActive(robotId, isActive);
+    sendJson(res, 200, { robot });
+    return true;
+  }
+
+  const robotPowerAutomateMatch = pathname.match(/^\/api\/robots\/([^/]+)\/power-automate$/);
+  if (req.method === "PATCH" && robotPowerAutomateMatch) {
+    assertSameOrigin(req);
+    await requireRole(req, new Set(["ADMIN"]));
+    const robotId = requireUuid(robotPowerAutomateMatch[1], "robotId");
+    const payload = await parseBody(req);
+    validatePowerAutomateUrls(payload);
+    const robot = await database.updateRobotPowerAutomate(robotId, payload);
     sendJson(res, 200, { robot });
     return true;
   }

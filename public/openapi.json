@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "RPA Central Monitoring API",
-    "version": "3.1.0",
+    "version": "3.2.0",
     "description": "Authenticated PostgreSQL-backed API for robot inventory, machine heartbeat monitoring, latest runs, and Power Automate logging. Dashboard users are provisioned directly in the database; public registration is not available."
   },
   "servers": [
@@ -110,8 +110,8 @@
     "/api/dashboard": {
       "get": {
         "tags": ["Dashboard"],
-        "summary": "Get active robots, machines, and latest runs",
-        "description": "Returns active rpa_robot and rpa_machine rows, the latest rpa_robot_run for each robot, and events for those runs.",
+        "summary": "Get robots, active machines, and latest runs",
+        "description": "Returns all rpa_robot rows so turned-off robots remain visible, active rpa_machine rows, the latest rpa_robot_run for each robot, and events for those runs.",
         "operationId": "getDashboard",
         "responses": {
           "200": {
@@ -198,8 +198,10 @@
                 "powerAutomateEnvironmentId": "Default-xxxxxxxx",
                 "cloudFlowId": "xxxxxxxx",
                 "cloudFlowName": "ITZONE Receipt Main Flow",
+                "cloudFlowUrl": "https://make.powerautomate.com/manage/environments/Default-xxxxxxxx/flows/xxxxxxxx/details",
                 "desktopFlowId": "xxxxxxxx",
                 "desktopFlowName": "ITZONE Receipt PAD",
+                "desktopFlowUrl": "https://make.powerautomate.com/manage/environments/Default-xxxxxxxx/uiflows/xxxxxxxx/details",
                 "accountName": "Robot Account 02",
                 "machineName": "BOT-PC-02",
                 "machineIp": "10.0.0.22",
@@ -219,6 +221,84 @@
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "409": { "$ref": "#/components/responses/Conflict" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/robots/{robotId}/active": {
+      "patch": {
+        "tags": ["Robots"],
+        "summary": "Turn a robot on or off",
+        "description": "ADMIN only. Turned-off robots remain visible, but new logger START requests return 409 Conflict. Existing RUNNING records may still be completed.",
+        "operationId": "updateRobotActive",
+        "parameters": [
+          {
+            "name": "robotId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RobotActiveUpdateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Robot availability updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RobotResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/robots/{robotId}/power-automate": {
+      "patch": {
+        "tags": ["Robots"],
+        "summary": "Update a robot's Power Automate links",
+        "description": "ADMIN only. Stores separate Cloud Flow and Desktop Flow targets plus the account name shown to dashboard users.",
+        "operationId": "updateRobotPowerAutomate",
+        "parameters": [
+          {
+            "name": "robotId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RobotPowerAutomateUpdateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Power Automate settings updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RobotResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
           "500": { "$ref": "#/components/responses/ServerError" }
         }
       }
@@ -590,8 +670,10 @@
           "cloudFlowId": { "type": "string", "nullable": true },
           "cloudFlowName": { "type": "string", "nullable": true },
           "cloudTriggerName": { "type": "string", "nullable": true },
+          "cloudFlowUrl": { "type": "string", "format": "uri", "nullable": true },
           "desktopFlowId": { "type": "string", "nullable": true },
           "desktopFlowName": { "type": "string", "nullable": true },
+          "desktopFlowUrl": { "type": "string", "format": "uri", "nullable": true },
           "powerAutomateUrl": { "type": "string", "format": "uri", "nullable": true },
           "accountName": { "type": "string", "nullable": true, "example": "Robot Account 02" },
           "machineId": { "type": "string", "format": "uuid", "nullable": true },
@@ -736,14 +818,36 @@
           "cloudFlowId": { "type": "string", "maxLength": 200 },
           "cloudFlowName": { "type": "string", "maxLength": 255 },
           "cloudTriggerName": { "type": "string", "maxLength": 150 },
+          "cloudFlowUrl": { "type": "string", "format": "uri", "maxLength": 2000 },
           "desktopFlowId": { "type": "string", "maxLength": 200 },
           "desktopFlowName": { "type": "string", "maxLength": 255 },
+          "desktopFlowUrl": { "type": "string", "format": "uri", "maxLength": 2000 },
           "powerAutomateUrl": { "type": "string", "format": "uri" },
           "accountName": { "type": "string", "maxLength": 150 },
           "machineName": { "type": "string", "maxLength": 150 },
           "machineIp": { "type": "string", "maxLength": 100 },
           "anydeskId": { "type": "string", "maxLength": 100 },
           "isActive": { "type": "boolean", "default": true }
+        }
+      },
+      "RobotActiveUpdateRequest": {
+        "type": "object",
+        "required": ["isActive"],
+        "properties": {
+          "isActive": { "type": "boolean" }
+        }
+      },
+      "RobotPowerAutomateUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "powerAutomateEnvironmentId": { "type": "string", "maxLength": 200 },
+          "accountName": { "type": "string", "maxLength": 150 },
+          "cloudFlowId": { "type": "string", "maxLength": 200 },
+          "cloudFlowName": { "type": "string", "maxLength": 255 },
+          "cloudFlowUrl": { "type": "string", "format": "uri", "maxLength": 2000 },
+          "desktopFlowId": { "type": "string", "maxLength": 200 },
+          "desktopFlowName": { "type": "string", "maxLength": 255 },
+          "desktopFlowUrl": { "type": "string", "format": "uri", "maxLength": 2000 }
         }
       },
       "MachineHeartbeatRequest": {

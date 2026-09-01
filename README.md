@@ -124,6 +124,8 @@ GET  /api/history
 GET  /api/machines
 POST /api/machines/heartbeat
 POST /api/robots
+PATCH /api/robots/:robotId/active
+PATCH /api/robots/:robotId/power-automate
 POST /api/logger/start
 POST /api/logger/success
 POST /api/logger/failed
@@ -150,6 +152,25 @@ Robot register/update:
 
 `robotCode`-g client ilgeehgui. Server shine robot-d `RPA-000001` helbereer
 davhardahgui code avtomataar olgono.
+
+## Power Automate Edge profile launcher
+
+Dashboard-iin **Open Cloud Flow** bolon **Open Desktop Flow** tovch ni robot-iin
+`accountName`-tai ijil nertei Microsoft Edge profile-iig neene. Jishee ni Edge
+profile-iin haragdah ner `NEXT` bol robot-iin Account Name bas yag `NEXT` baina.
+Email hayag esvel uur ner profile songohgui.
+
+Windows computer bur deer launcher-iig neg udaa suulgana:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-power-automate-profile-launcher.ps1
+```
+
+Installer ni `rpa-power-automate://` local protocol-iig current Windows user-d
+burtgene. Anh tovch darahad browser confirmation haruulbal neehig zuvshuurnu.
+Launcher ni zuvhun `https://make.powerautomate.com` hayag neeh baidlaar
+hyazgaarlagdsan. Dashboard server deer suulgah shaardlagagui; tovch darj baigaa
+Windows computer deer suulgasan baina.
 
 Robot start:
 

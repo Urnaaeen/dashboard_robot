@@ -9,8 +9,10 @@ const EMPTY_ADD_ROBOT_DRAFT = Object.freeze({
   anydeskId: "",
   cloudFlowId: "",
   cloudFlowName: "",
+  cloudFlowUrl: "",
   desktopFlowId: "",
   desktopFlowName: "",
+  desktopFlowUrl: "",
 });
 
 function routeFromLocation() {
@@ -88,14 +90,9 @@ const state = {
     search: "",
     status: "ALL",
   },
-  logger: {
-    robotId: "",
-    errorCode: "ERR_FILE_LOCKED",
-    errorStep: "Open Excel",
-    errorMessage: "Excel file is locked.",
-  },
   addRobotDraft: { ...EMPTY_ADD_ROBOT_DRAFT },
   addRobotOpen: false,
+  powerAutomateEditorRobotId: "",
   view: initialRoute.view,
   routeRobotCode: initialRoute.robotCode,
   detailReturnView: "overview",
@@ -116,6 +113,7 @@ const statusMeta = {
   IDLE: { label: "Idle", className: "status-idle" },
   OFFLINE: { label: "Offline", className: "status-offline" },
   NOT_CONNECTED: { label: "Not Connected", className: "status-not_connected" },
+  DISABLED: { label: "Turned Off", className: "status-disabled" },
 };
 
 const icons = {
@@ -189,17 +187,15 @@ function syncRobotSelectionFromRoute({ canonicalize = false } = {}) {
   }
   const robot = state.data.robots.find((item) => item.robotCode === state.routeRobotCode) || null;
   state.selectedRobotId = robot?.robotId || "";
-  if (robot) {
-    state.logger.robotId = robot.robotId;
-    if (canonicalize && window.location.pathname !== robotDetailPath(robot)) {
-      updateBrowserUrl(robotDetailPath(robot), true, window.history.state || {});
-    }
+  if (robot && canonicalize && window.location.pathname !== robotDetailPath(robot)) {
+    updateBrowserUrl(robotDetailPath(robot), true, window.history.state || {});
   }
   return robot;
 }
 
 function navigateToView(view, { replace = false } = {}) {
   state.addRobotOpen = false;
+  state.powerAutomateEditorRobotId = "";
   document.body.classList.remove("modal-open");
   state.view = view;
   state.routeRobotCode = "";
@@ -209,11 +205,11 @@ function navigateToView(view, { replace = false } = {}) {
 
 function navigateToRobot(robot, { replace = false } = {}) {
   state.addRobotOpen = false;
+  state.powerAutomateEditorRobotId = "";
   document.body.classList.remove("modal-open");
   state.view = "detail";
   state.routeRobotCode = robot.robotCode;
   state.selectedRobotId = robot.robotId;
-  state.logger.robotId = robot.robotId;
   updateBrowserUrl(robotDetailPath(robot), replace, {
     detailReturnView: state.detailReturnView || "overview",
   });
@@ -274,10 +270,6 @@ function canAdmin() {
   return state.currentUser?.role === "ADMIN";
 }
 
-function canOperate() {
-  return ["ADMIN", "OPERATOR"].includes(state.currentUser?.role);
-}
-
 function userInitials() {
   const value = state.currentUser?.displayName || state.currentUser?.username || "U";
   return value
@@ -313,11 +305,8 @@ async function loadData({ silent = false } = {}) {
     if (state.view !== "detail" && !state.selectedRobotId && state.data.robots.length > 0) {
       state.selectedRobotId = state.data.robots[0].robotId;
     }
-    if (!state.logger.robotId && state.data.robots.length > 0) {
-      state.logger.robotId = state.selectedRobotId;
-    }
     setApiState(true);
-    if (!(silent && state.addRobotOpen)) {
+    if (!(silent && (state.addRobotOpen || state.powerAutomateEditorRobotId))) {
       render();
     }
   } catch (error) {
@@ -439,6 +428,9 @@ function rows() {
 }
 
 function getDisplayStatus(robot, run) {
+  if (!robot.isActive) {
+    return "DISABLED";
+  }
   if (!run) {
     return "UNKNOWN";
   }
@@ -460,10 +452,10 @@ function isStaleRunning(robot, run) {
   return elapsedMs > maxMinutes * 60 * 1000;
 }
 
-function filteredRows() {
+function filteredRows({ includeInactive = false } = {}) {
   const query = state.filters.robot.trim().toLowerCase();
   return rows().filter(({ robot, latestRun, displayStatus }) => {
-    if (!robot.isActive) {
+    if (!includeInactive && !robot.isActive) {
       return false;
     }
     if (
@@ -475,14 +467,8 @@ function filteredRows() {
     if (state.filters.machine !== "ALL" && robot.machineName !== state.filters.machine) {
       return false;
     }
-    if (state.filters.status !== "ALL") {
-      if (state.filters.status === "STALE_RUNNING") {
-        if (displayStatus !== "STALE_RUNNING") {
-          return false;
-        }
-      } else if ((latestRun?.status || "UNKNOWN") !== state.filters.status) {
-        return false;
-      }
+    if (state.filters.status !== "ALL" && displayStatus !== state.filters.status) {
+      return false;
     }
     if (state.filters.date && localDateValue(latestRun?.startedAt) !== state.filters.date) {
       return false;
@@ -599,7 +585,7 @@ function renderOverview() {
 }
 
 function renderRobotsView() {
-  const filtered = filteredRows();
+  const filtered = filteredRows({ includeInactive: true });
   return `
     <div class="dashboard-stack">
       ${renderFilters()}
@@ -607,7 +593,7 @@ function renderRobotsView() {
         <div class="panel-heading">
           <div>
             <h2>Robot Inventory</h2>
-            <p>${filtered.length} active robots</p>
+            <p>${filtered.length} registered robots</p>
           </div>
           <button class="secondary-button" type="button" data-action="clear-filters">${icons.filter}<span>Clear Filters</span></button>
         </div>
@@ -865,16 +851,13 @@ function renderDetailView() {
   const runEvents = state.data.runEvents
     .filter((event) => event.robotRunId === latestRun?.robotRunId)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  const loggerActions = canOperate()
-    ? `
-      <button class="secondary-button" type="button" data-action="logger-start" data-robot-id="${escapeHtml(robot.robotId)}">${icons.play}<span>Start</span></button>
-      <button class="secondary-button" type="button" data-action="logger-success" data-robot-id="${escapeHtml(robot.robotId)}">${icons.check}<span>Success</span></button>
-      <button class="danger-button" type="button" data-action="logger-failed" data-robot-id="${escapeHtml(robot.robotId)}">${icons.x}<span>Failed</span></button>
-    `
-    : "";
+  const cloudUrl = getCloudFlowUrl(robot);
+  const desktopUrl = getDesktopFlowUrl(robot);
+  const cloudLaunchUrl = getPowerAutomateLaunchUrl(robot, cloudUrl);
+  const desktopLaunchUrl = getPowerAutomateLaunchUrl(robot, desktopUrl);
 
   return `
-    <div class="detail-layout">
+    <div class="detail-layout detail-layout-single">
       <section class="detail-panel">
         <div class="detail-hero">
           <button class="ghost-button" type="button" data-action="back">${icons.back}<span>Back</span></button>
@@ -883,13 +866,16 @@ function renderDetailView() {
               <h2>${escapeHtml(robot.robotName)}</h2>
               <p class="muted">${escapeHtml(robot.powerAutomateEnvironmentId || "No environment ID")} &middot; ${escapeHtml(robot.machineName)}</p>
             </div>
-            ${renderStatusBadge(displayStatus)}
+            <div class="detail-status-stack">
+              ${renderStatusBadge(displayStatus)}
+              ${renderRobotActiveToggle(robot)}
+            </div>
           </div>
           <div class="detail-actions">
-            <a class="primary-button" href="${escapeHtml(robot.powerAutomateUrl || "#")}" target="_blank" rel="noreferrer">
-              ${icons.external}<span>Open Power Automate</span>
-            </a>
-            ${loggerActions}
+            ${cloudUrl ? `<a class="primary-button" href="${escapeHtml(cloudLaunchUrl)}" ${externalLinkAttributes(cloudLaunchUrl)}>${icons.external}<span>Open Cloud Flow</span></a>` : ""}
+            ${desktopUrl ? `<a class="secondary-button" href="${escapeHtml(desktopLaunchUrl)}" ${externalLinkAttributes(desktopLaunchUrl)}>${icons.external}<span>Open Desktop Flow</span></a>` : ""}
+            ${canAdmin() ? `<button class="secondary-button" type="button" data-action="edit-power-automate" data-robot-id="${escapeHtml(robot.robotId)}">Edit Power Automate</button>` : ""}
+            ${robot.accountName ? `<span class="account-chip">${escapeHtml(robot.accountName)}</span>` : ""}
           </div>
         </div>
 
@@ -911,12 +897,8 @@ function renderDetailView() {
           ${renderEventList(runEvents)}
         </div>
       </section>
-
-      <aside class="side-stack">
-        ${renderRobotPicker()}
-        ${canOperate() ? renderLoggerPanel(robot.robotId) : ""}
-      </aside>
     </div>
+    ${state.powerAutomateEditorRobotId ? renderPowerAutomateModal(robot) : ""}
   `;
 }
 
@@ -1006,6 +988,10 @@ function renderAddRobotModal() {
               <label for="newRobotCloudFlow">Cloud Flow Name</label>
               <input id="newRobotCloudFlow" name="cloudFlowName" value="${escapeHtml(draft.cloudFlowName)}" maxlength="255" autocomplete="off" placeholder="ITZONE Receipt Main Flow" />
             </div>
+            <div class="field field-full">
+              <label for="newRobotCloudFlowUrl">Cloud Flow URL</label>
+              <input id="newRobotCloudFlowUrl" name="cloudFlowUrl" type="url" value="${escapeHtml(draft.cloudFlowUrl)}" maxlength="2000" autocomplete="off" placeholder="https://make.powerautomate.com/..." />
+            </div>
             <div class="field">
               <label for="newRobotDesktopFlowId">Desktop Flow ID</label>
               <input id="newRobotDesktopFlowId" name="desktopFlowId" value="${escapeHtml(draft.desktopFlowId)}" maxlength="200" autocomplete="off" placeholder="xxxxxxxx" />
@@ -1013,6 +999,10 @@ function renderAddRobotModal() {
             <div class="field">
               <label for="newRobotDesktopFlow">Desktop Flow Name</label>
               <input id="newRobotDesktopFlow" name="desktopFlowName" value="${escapeHtml(draft.desktopFlowName)}" maxlength="255" autocomplete="off" placeholder="ITZONE Receipt PAD" />
+            </div>
+            <div class="field field-full">
+              <label for="newRobotDesktopFlowUrl">Desktop Flow URL</label>
+              <input id="newRobotDesktopFlowUrl" name="desktopFlowUrl" type="url" value="${escapeHtml(draft.desktopFlowUrl)}" maxlength="2000" autocomplete="off" placeholder="https://make.powerautomate.com/..." />
             </div>
           </div>
           <div class="modal-actions">
@@ -1035,7 +1025,7 @@ function renderFilters() {
     ),
   ].sort();
   const machines = [...new Set(state.data.robots.map((robot) => robot.machineName).filter(Boolean))].sort();
-  const statuses = ["RUNNING", "SUCCESS", "FAILED", "QUEUED", "CANCELLED", "TIMEOUT", "UNKNOWN", "STALE_RUNNING"];
+  const statuses = ["RUNNING", "SUCCESS", "FAILED", "QUEUED", "CANCELLED", "TIMEOUT", "UNKNOWN", "STALE_RUNNING", "DISABLED"];
 
   return `
     <section class="filter-band" aria-label="Filters">
@@ -1101,6 +1091,8 @@ function renderRobotTable(tableRows, options = {}) {
 }
 
 function renderOverviewRow({ robot, latestRun, displayStatus }) {
+  const cloudUrl = getCloudFlowUrl(robot);
+  const cloudLaunchUrl = getPowerAutomateLaunchUrl(robot, cloudUrl);
   return `
     <tr>
       <td>
@@ -1118,7 +1110,7 @@ function renderOverviewRow({ robot, latestRun, displayStatus }) {
       <td>
         <div class="table-actions">
           <button class="icon-button" type="button" data-action="detail" data-robot-id="${escapeHtml(robot.robotId)}" title="Open robot detail" aria-label="Open robot detail">${icons.robot}</button>
-          <a class="icon-button" href="${escapeHtml(robot.powerAutomateUrl || "#")}" target="_blank" rel="noreferrer" title="Open Power Automate" aria-label="Open Power Automate">${icons.external}</a>
+          ${cloudUrl ? `<a class="icon-button" href="${escapeHtml(cloudLaunchUrl)}" ${externalLinkAttributes(cloudLaunchUrl)} title="Open Cloud Flow" aria-label="Open Cloud Flow">${icons.external}</a>` : ""}
         </div>
       </td>
     </tr>
@@ -1153,74 +1145,114 @@ function renderStatusBadge(status) {
   return `<span class="status-badge ${meta.className}">${escapeHtml(meta.label)}</span>`;
 }
 
-function renderRobotPicker() {
-  const allRows = rows().sort((a, b) => a.robot.robotName.localeCompare(b.robot.robotName));
+function safePowerAutomateUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:" && url.hostname === "make.powerautomate.com"
+      ? url.href
+      : "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function getCloudFlowUrl(robot) {
+  const explicitUrl = safePowerAutomateUrl(robot.cloudFlowUrl);
+  if (explicitUrl) return explicitUrl;
+  if (robot.powerAutomateEnvironmentId && robot.cloudFlowId) {
+    return `https://make.powerautomate.com/manage/environments/${encodeURIComponent(robot.powerAutomateEnvironmentId)}/flows/${encodeURIComponent(robot.cloudFlowId)}/details`;
+  }
+  const legacyUrl = safePowerAutomateUrl(robot.powerAutomateUrl);
+  return legacyUrl.includes("/flows/") && !legacyUrl.includes("/uiflows/") ? legacyUrl : "";
+}
+
+function getDesktopFlowUrl(robot) {
+  const explicitUrl = safePowerAutomateUrl(robot.desktopFlowUrl);
+  if (explicitUrl) return explicitUrl;
+  if (robot.powerAutomateEnvironmentId && robot.desktopFlowId) {
+    return `https://make.powerautomate.com/manage/environments/${encodeURIComponent(robot.powerAutomateEnvironmentId)}/uiflows/${encodeURIComponent(robot.desktopFlowId)}/details`;
+  }
+  const legacyUrl = safePowerAutomateUrl(robot.powerAutomateUrl);
+  return legacyUrl.includes("/uiflows/") ? legacyUrl : "";
+}
+
+function getPowerAutomateLaunchUrl(robot, targetUrl) {
+  const profileName = String(robot.accountName || "").trim();
+  if (!profileName || !targetUrl) return targetUrl;
+  return `rpa-power-automate://open?profile=${encodeURIComponent(profileName)}&url=${encodeURIComponent(targetUrl)}`;
+}
+
+function externalLinkAttributes(url) {
+  return String(url || "").startsWith("rpa-power-automate:")
+    ? ""
+    : 'target="_blank" rel="noreferrer"';
+}
+
+function renderRobotActiveToggle(robot) {
+  if (!canAdmin()) return "";
+  const label = robot.isActive ? "On" : "Off";
   return `
-    <section class="side-panel">
-      <div class="panel-heading">
-        <div>
-          <h2>Robot</h2>
-          <p>Detail target</p>
-        </div>
-      </div>
-      <div class="panel-body">
-        <div class="field">
-          <label for="detailRobotPicker">Robot</label>
-          <select id="detailRobotPicker" data-action="pick-robot">
-            ${allRows
-              .map(({ robot }) => `<option value="${escapeHtml(robot.robotId)}" ${selected(robot.robotId, state.selectedRobotId)}>${escapeHtml(robot.robotName)}</option>`)
-              .join("")}
-          </select>
-        </div>
-      </div>
-    </section>
+    <label class="robot-active-toggle">
+      <input type="checkbox" data-robot-active data-robot-id="${escapeHtml(robot.robotId)}" ${robot.isActive ? "checked" : ""} aria-label="Turn robot on or off" />
+      <span class="toggle-track" aria-hidden="true"><span></span></span>
+      <span class="toggle-label">${label}</span>
+    </label>
   `;
 }
 
-function renderLoggerPanel(forRobotId = "") {
-  const targetRobotId = forRobotId || state.logger.robotId || state.selectedRobotId;
-  const robotOptions = state.data.robots
-    .slice()
-    .sort((a, b) => a.robotName.localeCompare(b.robotName))
-    .map((robot) => `<option value="${escapeHtml(robot.robotId)}" ${selected(robot.robotId, targetRobotId)}>${escapeHtml(robot.robotName)}</option>`)
-    .join("");
-
+function renderPowerAutomateModal(robot) {
   return `
-    <section class="side-panel">
-      <div class="panel-heading">
-        <div>
-          <h2>Robot Logging</h2>
-          <p>START, SUCCESS, FAILED</p>
+    <div class="modal-backdrop" data-power-automate-backdrop>
+      <section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="powerAutomateTitle">
+        <div class="modal-heading">
+          <div>
+            <h2 id="powerAutomateTitle">Power Automate</h2>
+            <p>${escapeHtml(robot.robotName)}</p>
+          </div>
+          <button class="icon-button" type="button" data-action="edit-power-automate-close" title="Close" aria-label="Close Power Automate settings">${icons.x}</button>
         </div>
-      </div>
-      <div class="panel-body">
-        <div class="logger-form">
-          <div class="field">
-            <label for="loggerRobot">Robot</label>
-            <select id="loggerRobot" data-logger="robotId" ${forRobotId ? "disabled" : ""}>
-              ${robotOptions}
-            </select>
+        <form data-form="power-automate" data-robot-id="${escapeHtml(robot.robotId)}">
+          <div class="modal-body robot-form-grid">
+            <div class="field field-full">
+              <label for="editRobotEnvironment">Environment ID</label>
+              <input id="editRobotEnvironment" name="powerAutomateEnvironmentId" value="${escapeHtml(robot.powerAutomateEnvironmentId || "")}" maxlength="200" autocomplete="off" />
+            </div>
+            <div class="field field-full">
+              <label for="editRobotAccount">Account Name</label>
+              <input id="editRobotAccount" name="accountName" value="${escapeHtml(robot.accountName || "")}" maxlength="150" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="editRobotCloudFlowId">Cloud Flow ID</label>
+              <input id="editRobotCloudFlowId" name="cloudFlowId" value="${escapeHtml(robot.cloudFlowId || "")}" maxlength="200" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="editRobotCloudFlowName">Cloud Flow Name</label>
+              <input id="editRobotCloudFlowName" name="cloudFlowName" value="${escapeHtml(robot.cloudFlowName || "")}" maxlength="255" autocomplete="off" />
+            </div>
+            <div class="field field-full">
+              <label for="editRobotCloudFlowUrl">Cloud Flow URL</label>
+              <input id="editRobotCloudFlowUrl" name="cloudFlowUrl" type="url" value="${escapeHtml(robot.cloudFlowUrl || getCloudFlowUrl(robot))}" maxlength="2000" autocomplete="off" placeholder="https://make.powerautomate.com/..." />
+            </div>
+            <div class="field">
+              <label for="editRobotDesktopFlowId">Desktop Flow ID</label>
+              <input id="editRobotDesktopFlowId" name="desktopFlowId" value="${escapeHtml(robot.desktopFlowId || "")}" maxlength="200" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="editRobotDesktopFlowName">Desktop Flow Name</label>
+              <input id="editRobotDesktopFlowName" name="desktopFlowName" value="${escapeHtml(robot.desktopFlowName || "")}" maxlength="255" autocomplete="off" />
+            </div>
+            <div class="field field-full">
+              <label for="editRobotDesktopFlowUrl">Desktop Flow URL</label>
+              <input id="editRobotDesktopFlowUrl" name="desktopFlowUrl" type="url" value="${escapeHtml(robot.desktopFlowUrl || getDesktopFlowUrl(robot))}" maxlength="2000" autocomplete="off" placeholder="https://make.powerautomate.com/..." />
+            </div>
           </div>
-          <div class="logger-actions">
-            <button class="primary-button" type="button" data-action="logger-start" data-robot-id="${escapeHtml(targetRobotId)}" title="Create RUNNING run">${icons.play}<span>Start</span></button>
-            <button class="secondary-button" type="button" data-action="logger-success" data-robot-id="${escapeHtml(targetRobotId)}" title="Update latest run to SUCCESS">${icons.check}<span>Success</span></button>
-            <button class="danger-button" type="button" data-action="logger-failed" data-robot-id="${escapeHtml(targetRobotId)}" title="Update latest run to FAILED">${icons.x}<span>Failed</span></button>
+          <div class="modal-actions">
+            <button class="secondary-button" type="button" data-action="edit-power-automate-close">Cancel</button>
+            <button class="primary-button" type="submit"><span>Save</span></button>
           </div>
-          <div class="field">
-            <label for="loggerErrorCode">Error Code</label>
-            <input id="loggerErrorCode" data-logger="errorCode" value="${escapeHtml(state.logger.errorCode)}" />
-          </div>
-          <div class="field">
-            <label for="loggerErrorStep">Error Step</label>
-            <input id="loggerErrorStep" data-logger="errorStep" value="${escapeHtml(state.logger.errorStep)}" />
-          </div>
-          <div class="field">
-            <label for="loggerErrorMessage">Error Message</label>
-            <textarea id="loggerErrorMessage" data-logger="errorMessage">${escapeHtml(state.logger.errorMessage)}</textarea>
-          </div>
-        </div>
-      </div>
-    </section>
+        </form>
+      </section>
+    </div>
   `;
 }
 
@@ -1350,74 +1382,6 @@ function formatDuration(run, robot) {
   return `${remainSeconds}s`;
 }
 
-function latestRunForRobot(robotId) {
-  return latestRunMap().get(robotId) || null;
-}
-
-async function handleLoggerAction(action, robotId) {
-  if (!canOperate()) {
-    showToast("You do not have permission for logging actions.", "error");
-    return;
-  }
-  const targetRobotId = robotId || state.logger.robotId || state.selectedRobotId;
-  if (!targetRobotId) {
-    showToast("Select a robot first.", "error");
-    return;
-  }
-
-  try {
-    const robot = state.data.robots.find((item) => item.robotId === targetRobotId);
-    if (!robot?.robotCode) {
-      throw new Error("Robot code not found.");
-    }
-
-    if (action === "logger-start") {
-      await apiFetch("/api/logger/start", {
-        method: "POST",
-        body: JSON.stringify({ robotCode: robot.robotCode }),
-      });
-      showToast("RUNNING record created.");
-    }
-
-    if (action === "logger-success") {
-      const run = latestRunForRobot(targetRobotId);
-      await apiFetch("/api/logger/success", {
-        method: "POST",
-        body: JSON.stringify({
-          robotCode: robot.robotCode,
-          ...(run?.status === "RUNNING" && run.cloudFlowRunId
-            ? { cloudFlowRunId: run.cloudFlowRunId }
-            : {}),
-        }),
-      });
-      showToast("Run updated to SUCCESS.");
-    }
-
-    if (action === "logger-failed") {
-      const run = latestRunForRobot(targetRobotId);
-      await apiFetch("/api/logger/failed", {
-        method: "POST",
-        body: JSON.stringify({
-          robotCode: robot.robotCode,
-          ...(run?.status === "RUNNING" && run.cloudFlowRunId
-            ? { cloudFlowRunId: run.cloudFlowRunId }
-            : {}),
-          errorCode: state.logger.errorCode || "ERR_UNKNOWN",
-          errorStep: state.logger.errorStep || "Unknown Step",
-          errorMessage: state.logger.errorMessage || "Robot failed.",
-        }),
-      });
-      showToast("Run updated to FAILED.");
-    }
-
-    state.selectedRobotId = targetRobotId;
-    state.logger.robotId = targetRobotId;
-    await loadData({ silent: true });
-  } catch (error) {
-    showToast(error.message, "error");
-  }
-}
-
 function clearFilters() {
   state.filters = {
     environmentId: "ALL",
@@ -1450,6 +1414,81 @@ function setAddRobotModal(isOpen) {
   }
 }
 
+function setPowerAutomateEditor(robotId = "") {
+  if (robotId && !canAdmin()) {
+    showToast("Only administrators can edit Power Automate settings.", "error");
+    return;
+  }
+  state.powerAutomateEditorRobotId = robotId;
+  document.body.classList.toggle("modal-open", Boolean(robotId) || state.addRobotOpen);
+  render();
+  if (robotId) {
+    window.requestAnimationFrame(() => document.querySelector("#editRobotEnvironment")?.focus());
+  }
+}
+
+async function handleRobotActiveToggle(input) {
+  const robot = state.data.robots.find((item) => item.robotId === input.dataset.robotId);
+  if (!robot || !canAdmin()) {
+    input.checked = Boolean(robot?.isActive);
+    showToast("Only administrators can change robot availability.", "error");
+    return;
+  }
+
+  const isActive = input.checked;
+  if (!isActive && !window.confirm(`Turn off ${robot.robotName}? New START requests will be blocked.`)) {
+    input.checked = true;
+    return;
+  }
+
+  input.disabled = true;
+  try {
+    await apiFetch(`/api/robots/${encodeURIComponent(robot.robotId)}/active`, {
+      method: "PATCH",
+      body: JSON.stringify({ isActive }),
+    });
+    await loadData({ silent: true });
+    showToast(`${robot.robotName} turned ${isActive ? "on" : "off"}.`);
+  } catch (error) {
+    input.checked = robot.isActive;
+    input.disabled = false;
+    showToast(error.message, "error");
+  }
+}
+
+async function handlePowerAutomateSubmit(form) {
+  const robotId = form.dataset.robotId;
+  const robot = state.data.robots.find((item) => item.robotId === robotId);
+  const formData = new FormData(form);
+  const submitButton = form.querySelector('[type="submit"]');
+  submitButton.disabled = true;
+  submitButton.querySelector("span").textContent = "Saving...";
+
+  try {
+    await apiFetch(`/api/robots/${encodeURIComponent(robotId)}/power-automate`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        powerAutomateEnvironmentId: String(formData.get("powerAutomateEnvironmentId") || "").trim(),
+        accountName: String(formData.get("accountName") || "").trim(),
+        cloudFlowId: String(formData.get("cloudFlowId") || "").trim(),
+        cloudFlowName: String(formData.get("cloudFlowName") || "").trim(),
+        cloudFlowUrl: String(formData.get("cloudFlowUrl") || "").trim(),
+        desktopFlowId: String(formData.get("desktopFlowId") || "").trim(),
+        desktopFlowName: String(formData.get("desktopFlowName") || "").trim(),
+        desktopFlowUrl: String(formData.get("desktopFlowUrl") || "").trim(),
+      }),
+    });
+    state.powerAutomateEditorRobotId = "";
+    document.body.classList.remove("modal-open");
+    await loadData({ silent: true });
+    showToast(`${robot?.robotName || "Robot"} Power Automate settings saved.`);
+  } catch (error) {
+    submitButton.disabled = false;
+    submitButton.querySelector("span").textContent = "Save";
+    showToast(error.message, "error");
+  }
+}
+
 async function handleAddRobotSubmit(form) {
   const formData = new FormData(form);
   const submitButton = form.querySelector('[type="submit"]');
@@ -1471,8 +1510,10 @@ async function handleAddRobotSubmit(form) {
         anydeskId: String(formData.get("anydeskId") || "").trim(),
         cloudFlowId: String(formData.get("cloudFlowId") || "").trim(),
         cloudFlowName: String(formData.get("cloudFlowName") || "").trim(),
+        cloudFlowUrl: String(formData.get("cloudFlowUrl") || "").trim(),
         desktopFlowId: String(formData.get("desktopFlowId") || "").trim(),
         desktopFlowName: String(formData.get("desktopFlowName") || "").trim(),
+        desktopFlowUrl: String(formData.get("desktopFlowUrl") || "").trim(),
         isActive: true,
       }),
     });
@@ -1481,7 +1522,6 @@ async function handleAddRobotSubmit(form) {
     resetAddRobotDraft();
     document.body.classList.remove("modal-open");
     state.selectedRobotId = payload.robot.robotId;
-    state.logger.robotId = payload.robot.robotId;
     state.filters = {
       environmentId: "ALL",
       status: "ALL",
@@ -1501,6 +1541,10 @@ async function handleAddRobotSubmit(form) {
 document.addEventListener("click", async (event) => {
   if (event.target.matches("[data-modal-backdrop]")) {
     setAddRobotModal(false);
+    return;
+  }
+  if (event.target.matches("[data-power-automate-backdrop]")) {
+    setPowerAutomateEditor();
     return;
   }
 
@@ -1562,6 +1606,16 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
+    if (action === "edit-power-automate") {
+      setPowerAutomateEditor(robotId);
+      return;
+    }
+
+    if (action === "edit-power-automate-close") {
+      setPowerAutomateEditor();
+      return;
+    }
+
     if (action === "detail") {
       const robot = state.data.robots.find((item) => item.robotId === robotId);
       if (!robot) {
@@ -1588,10 +1642,6 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
-    if (["logger-start", "logger-success", "logger-failed"].includes(action)) {
-      await handleLoggerAction(action, robotId);
-      return;
-    }
   }
 
   const viewTarget = event.target.closest("[data-view]");
@@ -1605,15 +1655,27 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("submit", async (event) => {
-  const form = event.target.closest('[data-form="add-robot"]');
-  if (!form) {
+  const addRobotForm = event.target.closest('[data-form="add-robot"]');
+  if (addRobotForm) {
+    event.preventDefault();
+    await handleAddRobotSubmit(addRobotForm);
     return;
   }
-  event.preventDefault();
-  await handleAddRobotSubmit(form);
+
+  const powerAutomateForm = event.target.closest('[data-form="power-automate"]');
+  if (powerAutomateForm) {
+    event.preventDefault();
+    await handlePowerAutomateSubmit(powerAutomateForm);
+  }
 });
 
-document.addEventListener("change", (event) => {
+document.addEventListener("change", async (event) => {
+  const robotActive = event.target.closest("[data-robot-active]");
+  if (robotActive) {
+    await handleRobotActiveToggle(robotActive);
+    return;
+  }
+
   const addRobotForm = event.target.closest('[data-form="add-robot"]');
   if (addRobotForm && event.target.name) {
     updateAddRobotDraft(event.target.name, event.target.value);
@@ -1643,19 +1705,6 @@ document.addEventListener("change", (event) => {
     return;
   }
 
-  const logger = event.target.closest("[data-logger]");
-  if (logger) {
-    state.logger[logger.dataset.logger] = logger.value;
-    return;
-  }
-
-  const picker = event.target.closest('[data-action="pick-robot"]');
-  if (picker) {
-    const robot = state.data.robots.find((item) => item.robotId === picker.value);
-    if (robot) {
-      navigateToRobot(robot);
-    }
-  }
 });
 
 document.addEventListener("input", (event) => {
@@ -1690,15 +1739,15 @@ document.addEventListener("input", (event) => {
     return;
   }
 
-  const logger = event.target.closest("[data-logger]");
-  if (logger) {
-    state.logger[logger.dataset.logger] = logger.value;
-  }
 });
 
 window.addEventListener("keydown", async (event) => {
   if (event.key === "Escape" && state.addRobotOpen) {
     setAddRobotModal(false);
+    return;
+  }
+  if (event.key === "Escape" && state.powerAutomateEditorRobotId) {
+    setPowerAutomateEditor();
     return;
   }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r") {
