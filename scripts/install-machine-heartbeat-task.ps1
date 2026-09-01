@@ -80,12 +80,12 @@ $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
 
 $interval = New-TimeSpan -Minutes $IntervalMinutes
 $startTime = (Get-Date).AddMinutes(1)
-try {
-    $trigger = New-ScheduledTaskTrigger -Once -At $startTime -RepetitionInterval $interval -RepetitionDuration ([TimeSpan]::MaxValue)
-} catch {
-    # Older builds reject TimeSpan.MaxValue; an omitted duration also means forever.
-    $trigger = New-ScheduledTaskTrigger -Once -At $startTime -RepetitionInterval $interval
-}
+
+# Leave the repetition duration unset. An absent duration is how Task Scheduler
+# spells "Indefinitely". Passing [TimeSpan]::MaxValue looks equivalent but is
+# written into the task XML as P99999999DT23H59M59S, which the service rejects
+# at registration time with "value which is incorrectly formatted or out of range".
+$trigger = New-ScheduledTaskTrigger -Once -At $startTime -RepetitionInterval $interval
 
 $triggers = @($trigger)
 try {
@@ -114,6 +114,16 @@ $settings = New-ScheduledTaskSettingsSet `
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers `
     -Settings $settings -User "SYSTEM" -RunLevel Highest -Force | Out-Null
+
+# Some Windows builds silently drop a repetition they do not like, which would
+# leave a task that runs exactly once. Confirm the schedule actually stuck.
+$registeredInterval = (Get-ScheduledTask -TaskName $TaskName).Triggers[0].Repetition.Interval
+if ([string]::IsNullOrWhiteSpace($registeredInterval)) {
+    Write-Warning "The task was registered but Windows did not keep the repeat schedule."
+    Write-Warning "Open Task Scheduler, edit '$TaskName', and set 'Repeat task every $IntervalMinutes minute(s)' for a duration of 'Indefinitely'."
+} else {
+    Write-Output "Repeat interval: $registeredInterval (indefinitely)"
+}
 
 Write-Output "Installed scheduled task: $TaskName"
 Write-Output "Heartbeat target: $normalizedBaseUrl/api/machines/heartbeat"
