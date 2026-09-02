@@ -142,6 +142,7 @@ const icons = {
   file: '<svg viewBox="0 0 24 24" focusable="false"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>',
   trash: '<svg viewBox="0 0 24 24" focusable="false"><path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>',
   upload: '<svg viewBox="0 0 24 24" focusable="false"><path d="M12 16V4m-5 5 5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>',
+  person: '<svg viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg>',
 };
 
 const app = document.querySelector("#app");
@@ -982,8 +983,8 @@ function renderDetailView() {
             </div>
           </div>
           <div class="detail-actions">
-            ${cloudUrl ? `<a class="primary-button" href="${escapeHtml(cloudLaunchUrl)}" ${externalLinkAttributes(cloudLaunchUrl)}>${icons.external}<span>Open Cloud Flow</span></a>` : ""}
-            ${desktopUrl ? `<a class="secondary-button" href="${escapeHtml(desktopLaunchUrl)}" ${externalLinkAttributes(desktopLaunchUrl)}>${icons.external}<span>Open Desktop Flow</span></a>` : ""}
+            ${renderFlowLaunch(robot, "primary-button", cloudUrl, cloudLaunchUrl, "Cloud Flow")}
+            ${renderFlowLaunch(robot, "secondary-button", desktopUrl, desktopLaunchUrl, "Desktop Flow")}
             ${canAdmin() ? `<button class="secondary-button" type="button" data-action="edit-power-automate" data-robot-id="${escapeHtml(robot.robotId)}">Edit Power Automate</button>` : ""}
             ${robot.accountName ? `<span class="account-chip">${escapeHtml(robot.accountName)}</span>` : ""}
           </div>
@@ -1550,7 +1551,7 @@ function renderOverviewRow({ robot, latestRun, displayStatus }) {
       <td>
         <div class="table-actions">
           <button class="icon-button" type="button" data-action="detail" data-robot-id="${escapeHtml(robot.robotId)}" title="Open robot detail" aria-label="Open robot detail">${icons.robot}</button>
-          ${cloudUrl ? `<a class="icon-button" href="${escapeHtml(cloudLaunchUrl)}" ${externalLinkAttributes(cloudLaunchUrl)} title="Open Cloud Flow" aria-label="Open Cloud Flow">${icons.external}</a>` : ""}
+          ${cloudUrl ? `<a class="icon-button" href="${escapeHtml(cloudUrl)}" target="_blank" rel="noreferrer" title="Open Cloud Flow" aria-label="Open Cloud Flow">${icons.external}</a>` : ""}
         </div>
       </td>
     </tr>
@@ -1622,10 +1623,27 @@ function getPowerAutomateLaunchUrl(robot, targetUrl) {
   return `rpa-power-automate://open?profile=${encodeURIComponent(profileName)}&url=${encodeURIComponent(targetUrl)}`;
 }
 
-function externalLinkAttributes(url) {
-  return String(url || "").startsWith("rpa-power-automate:")
-    ? ""
-    : 'target="_blank" rel="noreferrer"';
+function renderFlowLaunch(robot, buttonClass, plainUrl, launchUrl, label) {
+  if (!plainUrl) {
+    return "";
+  }
+  // The visible button is always an ordinary https link, so it works on every
+  // machine. The profile launcher is offered next to it and only when the robot
+  // names an account, because that name is the browser profile to open.
+  const main =
+    `<a class="${buttonClass}" href="${escapeHtml(plainUrl)}" target="_blank" rel="noreferrer">` +
+    `${icons.external}<span>Open ${escapeHtml(label)}</span></a>`;
+  if (!launchUrl || launchUrl === plainUrl) {
+    return main;
+  }
+  const account = robot.accountName || "the robot account";
+  const hint = `Open ${label} in the ${account} browser profile`;
+  return `
+    <span class="flow-launch">
+      ${main}
+      <a class="icon-button profile-launch" href="${escapeHtml(launchUrl)}" title="${escapeHtml(hint)}" aria-label="${escapeHtml(hint)}">${icons.person}</a>
+    </span>
+  `;
 }
 
 function renderRobotActiveToggle(robot) {

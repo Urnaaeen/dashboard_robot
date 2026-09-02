@@ -168,22 +168,68 @@ davhardahgui code avtomataar olgono.
 
 ## Power Automate Edge profile launcher
 
-Dashboard-iin **Open Cloud Flow** bolon **Open Desktop Flow** tovch ni robot-iin
-`accountName`-tai ijil nertei Microsoft Edge profile-iig neene. Jishee ni Edge
-profile-iin haragdah ner `NEXT` bol robot-iin Account Name bas yag `NEXT` baina.
-Email hayag esvel uur ner profile songohgui.
+**Open Cloud Flow** bolon **Open Desktop Flow** tovch ni engiin
+`https://make.powerautomate.com` holboos neene. Ene ni ali ch computer deer,
+yamar ch nemelt suulgaltgui ajillana.
 
-Windows computer bur deer launcher-iig neg udaa suulgana:
+Robot deer Account Name bichigdsen bol tovchnii hajuud jijig **hun**-ii temdegtei
+nemelt tovch garna. Ter ni tuhain Edge profile-aar shuud neene, tul account
+songoh alham hemneene. Launcher suulgaagui bol ug jijig tovch l ajillahgui, gol
+tovch hevereeree ajillana.
+
+### 1. Edge profile-iin nereeg robot-iin Account Name-tei taaruulah
+
+Launcher ni Edge profile-iig **haragdah nereer** ni hairdag. Tul Edge profile-iin
+ner ni robot-iin Account Name-tei **yag** ijil baih ystoi. Email hayag esvel uur
+ner profile songohgui.
+
+Edge deer profile-iin nereeg solih:
+
+1. Edge-d tuhain profile-aar orno
+2. Baruun deed talyn profile zurag deer darj **Manage profile settings**
+3. **Edit** deer darj nereeg robot-iin Account Name-tei ijil bolgono
+   (jishee `dpbot@digitalpower.mn`)
+4. Edge-g haaj dahin neene. Profile-iin ner shine utgaaraa hadgalagdana.
+
+Odoo baigaa profile-uudiin nereeg harah:
+
+```powershell
+$ls = Get-Content "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Local State" -Raw | ConvertFrom-Json; $ls.profile.info_cache.PSObject.Properties | ForEach-Object { $_.Value.name }
+```
+
+### 2. Launcher-iig suulgah
+
+Tovch darj baigaa **hereglegch buriin computer deer neg udaa** suulgana.
+Dashboard server deer suulgah shaardlagagui.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-power-automate-profile-launcher.ps1
 ```
 
-Installer ni `rpa-power-automate://` local protocol-iig current Windows user-d
-burtgene. Anh tovch darahad browser confirmation haruulbal neehig zuvshuurnu.
-Launcher ni zuvhun `https://make.powerautomate.com` hayag neeh baidlaar
-hyazgaarlagdsan. Dashboard server deer suulgah shaardlagagui; tovch darj baigaa
-Windows computer deer suulgasan baina.
+Repository baihgui computer deer bol shuud tataj avna:
+
+```powershell
+$setup = "C:\rpa-setup"; New-Item -ItemType Directory -Path $setup -Force | Out-Null; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "open-power-automate-profile.ps1","install-power-automate-profile-launcher.ps1" | ForEach-Object { Invoke-WebRequest "https://raw.githubusercontent.com/Urnaaeen/dashboard_robot/main/scripts/$_" -OutFile "$setup\$_" }; Get-ChildItem $setup -Filter *.ps1 | Unblock-File; powershell -ExecutionPolicy Bypass -File "$setup\install-power-automate-profile-launcher.ps1"
+```
+
+⚠️ **Administrator-aar BUU ajilluul.** Installer ni `HKCU` buyu hereglegch tus buriin
+registry salbard bichdeg. Administrator-aar ajilluulbal adminy salbard bichigdej,
+uuriin hereglegch deer ajillahgui.
+
+Installer ni `rpa-power-automate://` local protocol-iig burtgene. Anh tovch
+darahad browser confirmation haruulbal neehig zuvshuurnu. Launcher ni zuvhun
+`https://make.powerautomate.com` hayag neeh baidlaar hyazgaarlagdsan.
+
+### 3. Shalgah
+
+Suulgalt bolon profile-iin ner zuv esehiig shalgah:
+
+```powershell
+Test-Path 'HKCU:\Software\Classes\rpa-power-automate'
+```
+
+`True` butsaah ystoi. `False` bol installer ajillaagui esvel Administrator-aar
+ajillasan baina.
 
 Robot start:
 
@@ -277,11 +323,42 @@ migration avtomataar negtgene.
 
 ### Suulgah
 
-Machine buriin PowerShell-iig Administrator-aar neegeed:
+Robot machine bur deer PowerShell-iig **Administrator-aar** neegeed daraah
+gurvan command-iig daraallaar ni ajilluulna.
+
+**1. Script-uudiig tatah**
+
+```powershell
+$setup = "C:\rpa-setup"; New-Item -ItemType Directory -Path $setup -Force | Out-Null; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "send-machine-heartbeat.ps1","install-machine-heartbeat-task.ps1" | ForEach-Object { Invoke-WebRequest "https://raw.githubusercontent.com/Urnaaeen/dashboard_robot/main/scripts/$_" -OutFile "$setup\$_" }; Get-ChildItem $setup -Filter *.ps1 | Unblock-File; Write-Host "Downloaded to $setup"
+```
+
+`Unblock-File` chuhal. Internetees tatsan script-iig Windows temdegleded, uungui
+bol "not digitally signed" gej ajillahgui.
+
+**2. Garaar neg heartbeat ilgeej shalgah**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\rpa-setup\send-machine-heartbeat.ps1" -ApiBaseUrl "https://rpa-monitoring.duckdns.org" -ApiKey "YOUR_API_KEY"
+```
+
+`[INFO] Heartbeat accepted ... (status: ONLINE)` garval buh zuil zuv. HTTP 401
+garval API key taarahgui, timeout garval firewall gadagshaa HTTPS haaj baina.
+
+**3. Scheduled task suulgah**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\rpa-setup\install-machine-heartbeat-task.ps1" -ApiBaseUrl "https://rpa-monitoring.duckdns.org" -ApiKey "YOUR_API_KEY"
+```
+
+Installer ni duusahiin umnu bas neg heartbeat ilgeej shalgadag. `$env:COMPUTERNAME`
+ni dashboard deerh machine-ii nertei taarch baigaa esehiig shalgaarai; uur ner
+baival shine mor uusne.
+
+Repository suusan computer deer bol shuud:
 
 ```powershell
 .\scripts\install-machine-heartbeat-task.ps1 `
-  -ApiBaseUrl "https://rpa.example.com" `
+  -ApiBaseUrl "https://rpa-monitoring.duckdns.org" `
   -ApiKey "YOUR_32_CHARACTER_OR_LONGER_SECRET"
 ```
 
