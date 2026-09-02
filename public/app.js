@@ -151,6 +151,7 @@ const icons = {
   upload: '<svg viewBox="0 0 24 24" focusable="false"><path d="M12 16V4m-5 5 5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>',
   person: '<svg viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg>',
   bell: '<svg viewBox="0 0 24 24" focusable="false"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
+  cancel: '<svg viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></svg>',
 };
 
 const app = document.querySelector("#app");
@@ -603,8 +604,18 @@ function updateNav() {
   });
 }
 
+function byLatestRunDesc(left, right) {
+  const leftAt = left.latestRun?.startedAt ? new Date(left.latestRun.startedAt).getTime() : -Infinity;
+  const rightAt = right.latestRun?.startedAt ? new Date(right.latestRun.startedAt).getTime() : -Infinity;
+  if (leftAt === rightAt) {
+    return left.robot.robotName.localeCompare(right.robot.robotName);
+  }
+  return rightAt - leftAt;
+}
+
 function renderOverview() {
-  const filtered = filteredRows();
+  // Newest activity first; robots that have never run sink to the bottom.
+  const filtered = filteredRows().sort(byLatestRunDesc);
   const metric = kpis(filtered);
   return `
     <div class="dashboard-stack">
@@ -955,10 +966,27 @@ function renderHistoryRow(run) {
       <td>${formatDuration(run)}</td>
       <td>${escapeHtml(run.machineName || "-")}</td>
       <td class="truncate" title="${escapeHtml(errorText)}">${escapeHtml(errorText)}</td>
-      <td>
-        <button class="icon-button" type="button" data-action="detail" data-robot-id="${escapeHtml(run.robotId)}" title="Open robot detail" aria-label="Open robot detail">${icons.robot}</button>
-      </td>
+      <td>${renderCancelRunButton(run)}</td>
     </tr>
+  `;
+}
+
+function renderCancelRunButton(run) {
+  const cancellable = CANCELLABLE_STATUSES.includes(run.status);
+  const allowed = canOperate() && cancellable;
+  const hint = cancellable
+    ? "Mark this run as cancelled"
+    : `A ${String(run.status || "").toLowerCase()} run cannot be cancelled`;
+  return `
+    <button
+      class="icon-button"
+      type="button"
+      data-action="cancel-run"
+      data-robot-run-id="${escapeHtml(run.robotRunId)}"
+      title="${escapeHtml(hint)}"
+      aria-label="${escapeHtml(hint)}"
+      ${allowed ? "" : "disabled"}
+    >${icons.cancel}</button>
   `;
 }
 
@@ -1375,6 +1403,32 @@ function formatRelativeTime(value) {
   }
   const days = Math.floor(hours / 24);
   return days === 1 ? "1 day ago" : `${days} days ago`;
+}
+
+// The dashboard cannot reach Power Automate, so this only closes the record.
+// The confirmation says so, because a button labelled Cancel next to a running
+// robot reads like it stops the robot.
+const CANCELLABLE_STATUSES = ["RUNNING", "QUEUED"];
+
+async function cancelRobotRun(robotRunId) {
+  const confirmed = window.confirm(
+    "Mark this run as cancelled?\n\n" +
+      "This updates the dashboard record only. It does not stop the robot in " +
+      "Power Automate.",
+  );
+  if (!confirmed) {
+    return;
+  }
+  try {
+    await apiFetch("/api/runs/status", {
+      method: "POST",
+      body: JSON.stringify({ robotRunId, status: "CANCELLED" }),
+    });
+    showToast("Run marked as cancelled.");
+    await Promise.all([loadHistory({ silent: true }), loadData({ silent: true })]);
+  } catch (error) {
+    showToast(error.message, "error");
+  }
 }
 
 async function loadNotifications() {
@@ -2257,6 +2311,11 @@ document.addEventListener("click", async (event) => {
       if (returnView === "history" && !state.history.loaded) {
         await loadHistory();
       }
+      return;
+    }
+
+    if (action === "cancel-run") {
+      await cancelRobotRun(actionTarget.dataset.robotRunId);
       return;
     }
 
