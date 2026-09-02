@@ -318,6 +318,36 @@ CREATE TABLE IF NOT EXISTS rpa_robot_suggestion (
     )
 );
 
+-- Machine status is computed on read, so nothing on its own records the moment
+-- a machine stopped reporting. This column remembers what was last announced,
+-- which is what makes a transition detectable. NULL means never observed yet,
+-- and is deliberately not treated as a transition, so the first pass after a
+-- deployment records the current state instead of announcing every machine.
+ALTER TABLE rpa_machine
+    ADD COLUMN IF NOT EXISTS notified_status VARCHAR(20);
+
+-- Category is intentionally left unconstrained. Only MACHINE_OFFLINE exists
+-- today, and a CHECK listing one value would have to be dropped and recreated
+-- the moment a second kind of notification is added.
+CREATE TABLE IF NOT EXISTS rpa_notification (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    category VARCHAR(30) NOT NULL,
+    title VARCHAR(300) NOT NULL,
+    body TEXT,
+    machine_id UUID REFERENCES rpa_machine(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_notification_title CHECK (BTRIM(title) <> '')
+);
+
+-- Read state is per person: one operator opening the panel must not clear the
+-- dot for everyone else. A missing row means unread.
+CREATE TABLE IF NOT EXISTS rpa_notification_read (
+    notification_id UUID NOT NULL REFERENCES rpa_notification(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES rpa_app_user(id) ON DELETE CASCADE,
+    read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (notification_id, user_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_rpa_robot_active
     ON rpa_robot(is_active);
 CREATE INDEX IF NOT EXISTS idx_rpa_robot_machine
@@ -350,6 +380,12 @@ CREATE INDEX IF NOT EXISTS idx_rpa_robot_document_robot
     ON rpa_robot_document(robot_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_rpa_robot_suggestion_robot
     ON rpa_robot_suggestion(robot_id, is_done, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rpa_notification_created
+    ON rpa_notification(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rpa_notification_machine
+    ON rpa_notification(machine_id, category);
+CREATE INDEX IF NOT EXISTS idx_rpa_notification_read_user
+    ON rpa_notification_read(user_id);
 
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$

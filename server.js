@@ -16,6 +16,8 @@ const COOKIE_SECURE =
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 5;
 const loginFailures = new Map();
+const NOTIFICATION_SCAN_MS = 60 * 1000;
+let notificationTimer = null;
 let dummyPasswordHashPromise;
 
 if (!Number.isFinite(SESSION_TTL_HOURS) || SESSION_TTL_HOURS <= 0 || SESSION_TTL_HOURS > 168) {
@@ -504,11 +506,15 @@ async function handleApi(req, res, pathname, searchParams) {
   }
 
   if (req.method === "GET" && pathname === "/api/dashboard") {
-    await requireSession(req);
-    const data = await database.getDashboardData();
+    const user = await requireSession(req);
+    const [data, unreadNotifications] = await Promise.all([
+      database.getDashboardData(),
+      database.getUnreadNotificationCount(user.userId),
+    ]);
     sendJson(res, 200, {
       generatedAt: nowIso(),
       machineOfflineSeconds: database.MACHINE_OFFLINE_SECONDS,
+      unreadNotifications,
       ...data,
     });
     return true;
@@ -612,6 +618,38 @@ async function handleApi(req, res, pathname, searchParams) {
     validatePowerAutomateUrls(payload);
     const robot = await database.updateRobotPowerAutomate(robotId, payload);
     sendJson(res, 200, { robot });
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/notifications") {
+    const user = await requireSession(req);
+    const [notifications, unreadNotifications] = await Promise.all([
+      database.getNotifications(user.userId, { limit: searchParams.get("limit") || 50 }),
+      database.getUnreadNotificationCount(user.userId),
+    ]);
+    sendJson(res, 200, { generatedAt: nowIso(), unreadNotifications, notifications });
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/notifications/read") {
+    assertSameOrigin(req);
+    const user = await requireSession(req);
+    const payload = await parseBody(req);
+    let notificationIds = null;
+    if (payload.notificationIds !== undefined) {
+      if (!Array.isArray(payload.notificationIds)) {
+        throw httpError("notificationIds must be an array.", 400);
+      }
+      if (payload.notificationIds.length > 200) {
+        throw httpError("notificationIds cannot exceed 200 entries.", 400);
+      }
+      notificationIds = payload.notificationIds.map((id, index) =>
+        requireUuid(id, `notificationIds[${index}]`),
+      );
+    }
+    const marked = await database.markNotificationsRead(user.userId, { notificationIds });
+    const unreadNotifications = await database.getUnreadNotificationCount(user.userId);
+    sendJson(res, 200, { marked, unreadNotifications });
     return true;
   }
 
@@ -897,17 +935,41 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+async function scanForNotifications() {
+  try {
+    const result = await database.syncMachineNotifications();
+    if (result.raised || result.resolved) {
+      console.log(
+        `Notifications: ${result.raised} raised, ${result.resolved} resolved.`,
+      );
+    }
+  } catch (error) {
+    // A failed scan must not take the server down; the next tick retries.
+    console.error(`Notification scan failed: ${error.message}`);
+  }
+}
+
 async function start() {
   await database.initializeSchema();
   if (process.env.SEED_DATABASE === "true") {
     await database.seedSampleData();
   }
+  // The first pass only records the current state, because every machine has
+  // a NULL notified_status until it has been seen once.
+  await scanForNotifications();
+  notificationTimer = setInterval(scanForNotifications, NOTIFICATION_SCAN_MS);
+  notificationTimer.unref?.();
+
   server.listen(PORT, () => {
     console.log(`RPA Monitoring Dashboard is running at http://localhost:${PORT}`);
   });
 }
 
 async function shutdown() {
+  if (notificationTimer) {
+    clearInterval(notificationTimer);
+    notificationTimer = null;
+  }
   server.close(async () => {
     await database.close();
     process.exit(0);

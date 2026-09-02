@@ -7,6 +7,7 @@ if (!process.env.DATABASE_URL) {
 }
 
 const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+const NOTIFICATION_RETENTION_DAYS = 10;
 
 const MACHINE_OFFLINE_SECONDS = Number(process.env.MACHINE_OFFLINE_SECONDS || 180);
 
@@ -140,6 +141,19 @@ function mapRunEvent(row) {
     message: row.message,
     eventData: row.event_data,
     createdAt: row.created_at,
+  };
+}
+
+function mapNotification(row) {
+  return {
+    notificationId: row.id,
+    category: row.category,
+    title: row.title,
+    body: row.body,
+    machineId: row.machine_id,
+    machineName: row.machine_name,
+    createdAt: row.created_at,
+    isRead: Boolean(row.is_read),
   };
 }
 
@@ -1125,6 +1139,144 @@ async function deleteRobotSuggestion(suggestionId) {
   return mapRobotSuggestion(result.rows[0]);
 }
 
+// Machine status is derived from the heartbeat on every read, so a change of
+// state leaves no trace of its own. This compares the live status against the
+// one last announced and turns the difference into notifications.
+//
+// Only two transitions matter. ONLINE to OFFLINE raises a notification.
+// OFFLINE back to ONLINE deletes it again, because an incident that fixed
+// itself should leave the list rather than sit there needing to be dismissed.
+// A NULL notified_status means the machine has not been observed yet and is
+// recorded without announcing anything, which keeps a fresh deployment quiet.
+async function syncMachineNotifications() {
+  return withTransaction(async (client) => {
+    const offlineMinutes = Math.round(MACHINE_OFFLINE_SECONDS / 60);
+    const currentStatus = `
+      SELECT
+        id,
+        machine_name,
+        notified_status,
+        CASE
+          WHEN last_heartbeat_at IS NULL THEN 'NOT_CONNECTED'
+          WHEN last_heartbeat_at < NOW() - make_interval(secs => $1::integer) THEN 'OFFLINE'
+          ELSE 'ONLINE'
+        END AS status
+      FROM rpa_machine
+      WHERE is_active = TRUE
+    `;
+
+    const raised = await client.query(
+      `
+        WITH current AS (${currentStatus})
+        INSERT INTO rpa_notification (category, title, body, machine_id)
+        SELECT
+          'MACHINE_OFFLINE',
+          machine_name || ' stopped reporting',
+          'No heartbeat for more than ' || $2::text || ' minutes. The machine may be '
+            || 'powered off, asleep, or disconnected from the network.',
+          id
+        FROM current
+        WHERE status = 'OFFLINE'
+          AND notified_status = 'ONLINE'
+        RETURNING machine_id
+      `,
+      [MACHINE_OFFLINE_SECONDS, offlineMinutes],
+    );
+
+    const resolved = await client.query(
+      `
+        WITH current AS (${currentStatus})
+        DELETE FROM rpa_notification
+        WHERE category = 'MACHINE_OFFLINE'
+          AND machine_id IN (
+            SELECT id FROM current WHERE status = 'ONLINE' AND notified_status = 'OFFLINE'
+          )
+        RETURNING machine_id
+      `,
+      [MACHINE_OFFLINE_SECONDS],
+    );
+
+    await client.query(
+      `
+        WITH current AS (${currentStatus})
+        UPDATE rpa_machine AS machine
+        SET notified_status = current.status
+        FROM current
+        WHERE machine.id = current.id
+          AND machine.notified_status IS DISTINCT FROM current.status
+      `,
+      [MACHINE_OFFLINE_SECONDS],
+    );
+
+    const purged = await client.query(
+      `
+        DELETE FROM rpa_notification
+        WHERE created_at < NOW() - make_interval(days => $1::integer)
+        RETURNING id
+      `,
+      [NOTIFICATION_RETENTION_DAYS],
+    );
+
+    return {
+      raised: raised.rowCount,
+      resolved: resolved.rowCount,
+      purged: purged.rowCount,
+    };
+  });
+}
+
+async function getNotifications(userId, { limit = 50 } = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const result = await pool.query(
+    `
+      SELECT
+        notification.*,
+        machine.machine_name,
+        (read_state.notification_id IS NOT NULL) AS is_read
+      FROM rpa_notification AS notification
+      LEFT JOIN rpa_machine AS machine ON machine.id = notification.machine_id
+      LEFT JOIN rpa_notification_read AS read_state
+        ON read_state.notification_id = notification.id
+       AND read_state.user_id = $1
+      ORDER BY notification.created_at DESC
+      LIMIT $2
+    `,
+    [userId, safeLimit],
+  );
+  return result.rows.map(mapNotification);
+}
+
+async function getUnreadNotificationCount(userId) {
+  const result = await pool.query(
+    `
+      SELECT COUNT(*) AS unread
+      FROM rpa_notification AS notification
+      LEFT JOIN rpa_notification_read AS read_state
+        ON read_state.notification_id = notification.id
+       AND read_state.user_id = $1
+      WHERE read_state.notification_id IS NULL
+    `,
+    [userId],
+  );
+  return Number(result.rows[0].unread || 0);
+}
+
+async function markNotificationsRead(userId, { notificationIds = null } = {}) {
+  // A null id list means everything currently visible to this user.
+  const result = await pool.query(
+    `
+      INSERT INTO rpa_notification_read (notification_id, user_id)
+      SELECT id, $1
+      FROM rpa_notification
+      WHERE ($2::uuid[] IS NULL OR id = ANY($2::uuid[]))
+      ON CONFLICT DO NOTHING
+      RETURNING notification_id
+    `,
+    [userId, notificationIds],
+  );
+  return result.rowCount;
+}
+
 async function close() {
   await pool.end();
 }
@@ -1132,6 +1284,11 @@ async function close() {
 module.exports = {
   DOCUMENT_MAX_BYTES,
   MACHINE_OFFLINE_SECONDS,
+  NOTIFICATION_RETENTION_DAYS,
+  getNotifications,
+  getUnreadNotificationCount,
+  markNotificationsRead,
+  syncMachineNotifications,
   close,
   createRobot,
   createRobotDocument,

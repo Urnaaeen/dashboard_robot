@@ -404,6 +404,48 @@ Heartbeat endpoint ni ug machine baihgui bol uusgene, bgaa bol IP, AnyDesk ID,
 heartbeat time bolon metadata-g shinechilne. Mun `machine_id`-gui uldsen robot-uudiig
 nereer ni holbono.
 
+## Notifications
+
+Machine medeelel ugohoo bolison ued dashboard-iin deed talyn **honh** tovch deer
+medegdel garna. Honh ni admin heseg-iin zuun tald baina.
+
+### Yaj ajilladag
+
+Machine-ii status ni unshih bur tootsoologddog tul shiljiltiig ilruuleh
+toloviig `rpa_machine.notified_status` bagana hadgalna. Server 60 secund
+tutam odoogiin statusiig umnu zarlasantai hartsuulna:
+
+- `ONLINE` -> `OFFLINE`: medegdel uusgene
+- `OFFLINE` -> `ONLINE`: umnuh medegdliig **ustgana**
+- `notified_status` NULL (anh udaa uzej baigaa): zuvhun tolov bichne,
+  medegdel gargahgui. Ene ni shine deploy deer buh machine-ii medegdel
+  neg dor uerlehees sergiilne
+
+Tul jagsaalt deer zuvhun **odoo shiideegui** asuudal l haragdana. Machine
+ergej holbogdmogts ug medegdel ooroo alga bolno.
+
+Medegdel `MACHINE_OFFLINE_SECONDS` hetersnees hoish hamgiin ihdee 1 minutiin
+dotor garna.
+
+### Untarsan, sleep, suljee tasarsan
+
+Gurvyg ni **ylgah bolomjgui** — gurvuulaa ijilhen haragdana, heartbeat
+irehee bolino. Tul medegdel shaltgaaniig taamaglahgui, zuvhun bodit barimt
+helne: machine medeelel ugohoo bolison.
+
+### Unshsan tolov
+
+Hereglegch bur uuriin gesen unshsan tolovtoi (`rpa_notification_read`).
+Unshaagui medegdel urdaa ulaan tsegtei, honh deer too garna. Neg operator
+unshihad busdyn tsegiig arilgahgui.
+
+Medegdel deer darahad ter machine-ii Machines delgets ruu shiljij, hailt
+ni tuhain machine-aar shuugdene.
+
+### Hadgalah hugatsaa
+
+10 honogoos huuchin medegdel scan bur deer avtomataar ustana.
+
 ## Production Docker deployment
 
 `docker-compose.prod.yml` ni Caddy, Node API/dashboard bolon PostgreSQL-iig tus

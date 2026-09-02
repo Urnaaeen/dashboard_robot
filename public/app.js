@@ -100,6 +100,13 @@ const state = {
   lastUpdated: null,
   refreshTimer: null,
   machineOfflineSeconds: 180,
+  notifications: {
+    items: [],
+    unreadCount: 0,
+    open: false,
+    loading: false,
+    error: "",
+  },
   robotDetail: {
     robotId: "",
     documents: [],
@@ -143,6 +150,7 @@ const icons = {
   trash: '<svg viewBox="0 0 24 24" focusable="false"><path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>',
   upload: '<svg viewBox="0 0 24 24" focusable="false"><path d="M12 16V4m-5 5 5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>',
   person: '<svg viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg>',
+  bell: '<svg viewBox="0 0 24 24" focusable="false"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
 };
 
 const app = document.querySelector("#app");
@@ -155,6 +163,7 @@ const toast = document.querySelector("#toast");
 const accountAvatar = document.querySelector("#accountAvatar");
 const accountName = document.querySelector("#accountName");
 const accountRole = document.querySelector("#accountRole");
+const notificationRoot = document.querySelector("#notificationRoot");
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -321,6 +330,7 @@ async function loadData({ silent = false } = {}) {
       machines: payload.machines || [],
     };
     state.machineOfflineSeconds = Number(payload.machineOfflineSeconds) || 180;
+    state.notifications.unreadCount = Number(payload.unreadNotifications) || 0;
     state.lastUpdated = new Date(payload.generatedAt || Date.now());
     syncRobotSelectionFromRoute({ canonicalize: true });
     if (state.view !== "detail" && !state.selectedRobotId && state.data.robots.length > 0) {
@@ -583,6 +593,7 @@ function updateChrome() {
   accountAvatar.textContent = userInitials();
   accountName.textContent = state.currentUser?.displayName || state.currentUser?.username || "User";
   accountRole.textContent = state.currentUser?.role || "VIEWER";
+  renderNotificationArea();
 }
 
 function updateNav() {
@@ -1343,6 +1354,151 @@ function renderSuggestionRow(suggestion) {
   `;
 }
 
+function formatRelativeTime(value) {
+  if (!value) {
+    return "";
+  }
+  const seconds = Math.round((Date.now() - new Date(value).getTime()) / 1000);
+  if (!Number.isFinite(seconds)) {
+    return "";
+  }
+  if (seconds < 60) {
+    return "just now";
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes} min ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours} hr ago`;
+  }
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 day ago" : `${days} days ago`;
+}
+
+async function loadNotifications() {
+  state.notifications.loading = true;
+  renderNotificationArea();
+  try {
+    const payload = await apiFetch("/api/notifications?limit=50");
+    state.notifications.items = payload.notifications || [];
+    state.notifications.unreadCount = Number(payload.unreadNotifications) || 0;
+    state.notifications.error = "";
+  } catch (error) {
+    state.notifications.error = error.message;
+  } finally {
+    state.notifications.loading = false;
+    renderNotificationArea();
+  }
+}
+
+async function setNotificationPanel(open) {
+  state.notifications.open = open;
+  renderNotificationArea();
+  if (open) {
+    await loadNotifications();
+  }
+}
+
+async function markNotificationsRead(notificationIds) {
+  try {
+    const body = notificationIds ? JSON.stringify({ notificationIds }) : "{}";
+    const payload = await apiFetch("/api/notifications/read", { method: "POST", body });
+    state.notifications.unreadCount = Number(payload.unreadNotifications) || 0;
+    for (const item of state.notifications.items) {
+      if (!notificationIds || notificationIds.includes(item.notificationId)) {
+        item.isRead = true;
+      }
+    }
+    renderNotificationArea();
+    updateChrome();
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function renderNotificationArea() {
+  if (!notificationRoot) {
+    return;
+  }
+  const unread = Number(state.notifications.unreadCount) || 0;
+  const label = unread ? `Notifications, ${unread} unread` : "Notifications";
+  notificationRoot.innerHTML = `
+    <button
+      class="icon-button notification-button ${state.notifications.open ? "is-open" : ""}"
+      type="button"
+      data-action="notifications-toggle"
+      title="${escapeHtml(label)}"
+      aria-label="${escapeHtml(label)}"
+      aria-haspopup="dialog"
+      aria-expanded="${state.notifications.open ? "true" : "false"}"
+    >
+      ${icons.bell}
+      ${unread ? `<span class="notification-badge">${unread > 99 ? "99+" : unread}</span>` : ""}
+    </button>
+    ${state.notifications.open ? renderNotificationPanel() : ""}
+  `;
+}
+
+function renderNotificationPanel() {
+  const unread = Number(state.notifications.unreadCount) || 0;
+  return `
+    <div class="notification-backdrop" data-notification-backdrop></div>
+    <section class="notification-panel" role="dialog" aria-label="Notifications">
+      <header class="notification-head">
+        <h2>Notifications</h2>
+        ${
+          unread
+            ? `<button class="link-button" type="button" data-action="notifications-read-all">Mark all read</button>`
+            : ""
+        }
+      </header>
+      ${renderNotificationList()}
+    </section>
+  `;
+}
+
+function renderNotificationList() {
+  if (state.notifications.error) {
+    return `
+      <p class="notification-empty notification-error">
+        ${escapeHtml(state.notifications.error)}
+        <button class="link-button" type="button" data-action="notifications-retry">Retry</button>
+      </p>
+    `;
+  }
+  if (state.notifications.loading && !state.notifications.items.length) {
+    return '<p class="notification-empty">Loading...</p>';
+  }
+  if (!state.notifications.items.length) {
+    return '<p class="notification-empty">Nothing to report. Every machine is reporting in.</p>';
+  }
+  return `<ul class="notification-list">${state.notifications.items.map(renderNotificationRow).join("")}</ul>`;
+}
+
+function renderNotificationRow(item) {
+  return `
+    <li>
+      <button
+        class="notification-item ${item.isRead ? "is-read" : ""}"
+        type="button"
+        data-action="notifications-open-item"
+        data-notification-id="${escapeHtml(item.notificationId)}"
+        data-machine-name="${escapeHtml(item.machineName || "")}"
+      >
+        <span class="notification-dot" aria-hidden="true"></span>
+        <span class="notification-body">
+          <span class="notification-title">${escapeHtml(item.title)}</span>
+          ${item.body ? `<span class="notification-text">${escapeHtml(item.body)}</span>` : ""}
+          <span class="notification-time">${escapeHtml(formatRelativeTime(item.createdAt))}</span>
+        </span>
+        ${item.isRead ? "" : '<span class="sr-only">Unread</span>'}
+      </button>
+    </li>
+  `;
+}
+
 function renderKpi(label, value, note, statusClass) {
   return `
     <article class="kpi-card">
@@ -2005,6 +2161,10 @@ document.addEventListener("click", async (event) => {
     setPowerAutomateEditor();
     return;
   }
+  if (event.target.matches("[data-notification-backdrop]")) {
+    await setNotificationPanel(false);
+    return;
+  }
 
   const actionTarget = event.target.closest("[data-action]");
   if (actionTarget) {
@@ -2096,6 +2256,33 @@ document.addEventListener("click", async (event) => {
       navigateToView(returnView, { replace: true });
       if (returnView === "history" && !state.history.loaded) {
         await loadHistory();
+      }
+      return;
+    }
+
+    if (action === "notifications-toggle") {
+      await setNotificationPanel(!state.notifications.open);
+      return;
+    }
+
+    if (action === "notifications-retry") {
+      await loadNotifications();
+      return;
+    }
+
+    if (action === "notifications-read-all") {
+      await markNotificationsRead(null);
+      return;
+    }
+
+    if (action === "notifications-open-item") {
+      const notificationId = actionTarget.dataset.notificationId;
+      const machineName = actionTarget.dataset.machineName;
+      await markNotificationsRead([notificationId]);
+      await setNotificationPanel(false);
+      if (machineName) {
+        state.machineFilters = { search: machineName, status: "ALL" };
+        navigateToView("machines");
       }
       return;
     }
@@ -2254,6 +2441,10 @@ document.addEventListener("input", (event) => {
 });
 
 window.addEventListener("keydown", async (event) => {
+  if (event.key === "Escape" && state.notifications.open) {
+    await setNotificationPanel(false);
+    return;
+  }
   if (event.key === "Escape" && state.addRobotOpen) {
     setAddRobotModal(false);
     return;

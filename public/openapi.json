@@ -20,7 +20,8 @@
     { "name": "Machines", "description": "Machine heartbeat and live availability" },
     { "name": "Logging", "description": "Power Automate run logging" },
     { "name": "Documents", "description": "Robot reference files" },
-    { "name": "Suggestions", "description": "Robot improvement requests" }
+    { "name": "Suggestions", "description": "Robot improvement requests" },
+    { "name": "Notifications", "description": "Machine availability alerts" }
   ],
   "paths": {
     "/api/auth/login": {
@@ -975,6 +976,107 @@
           }
         }
       }
+    },
+    "/api/notifications": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "List notifications with this user's read state",
+        "description": "Newest first. Only unresolved incidents appear: when a machine starts reporting again its notification is deleted rather than superseded. Read state is per user, so isRead reflects the signed in account only.",
+        "operationId": "getNotifications",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Notifications",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/notifications/read": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Mark notifications read for the signed in user",
+        "description": "Pass notificationIds to mark specific entries, or omit it to mark everything read. Already read entries are left untouched.",
+        "operationId": "markNotificationsRead",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "notificationIds": {
+                    "type": "array",
+                    "maxItems": 200,
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read state updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "marked",
+                    "unreadNotifications"
+                  ],
+                  "properties": {
+                    "marked": {
+                      "type": "integer"
+                    },
+                    "unreadNotifications": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1212,6 +1314,7 @@
         "properties": {
           "generatedAt": { "type": "string", "format": "date-time" },
           "machineOfflineSeconds": { "type": "integer", "description": "Seconds without a heartbeat before a machine is reported OFFLINE.", "example": 180 },
+          "unreadNotifications": { "type": "integer", "description": "Unread notifications for the signed in user." },
           "robots": { "type": "array", "items": { "$ref": "#/components/schemas/Robot" } },
           "robotRuns": { "type": "array", "items": { "$ref": "#/components/schemas/RobotRun" } },
           "runEvents": { "type": "array", "items": { "$ref": "#/components/schemas/RunEvent" } },
@@ -1597,6 +1700,74 @@
         "properties": {
           "suggestion": {
             "$ref": "#/components/schemas/RobotSuggestion"
+          }
+        }
+      },
+      "Notification": {
+        "type": "object",
+        "required": [
+          "notificationId",
+          "category",
+          "title",
+          "createdAt",
+          "isRead"
+        ],
+        "properties": {
+          "notificationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "category": {
+            "type": "string",
+            "example": "MACHINE_OFFLINE"
+          },
+          "title": {
+            "type": "string",
+            "example": "DP60196 stopped reporting"
+          },
+          "body": {
+            "type": "string",
+            "nullable": true
+          },
+          "machineId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "machineName": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "isRead": {
+            "type": "boolean",
+            "description": "Read state of the signed in user only."
+          }
+        }
+      },
+      "NotificationListResponse": {
+        "type": "object",
+        "required": [
+          "generatedAt",
+          "unreadNotifications",
+          "notifications"
+        ],
+        "properties": {
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "unreadNotifications": {
+            "type": "integer"
+          },
+          "notifications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Notification"
+            }
           }
         }
       }
