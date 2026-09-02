@@ -856,7 +856,7 @@ async function finishRobotRun(payload, status) {
       `
         UPDATE rpa_robot_run
         SET
-          status = $2,
+          status = $2::text,
           ended_at = COALESCE($3::timestamptz, NOW()),
           duration_seconds = GREATEST(
             0,
@@ -933,13 +933,13 @@ async function updateRunStatus(payload) {
       `
         UPDATE rpa_robot_run
         SET
-          status = $2,
+          status = $2::text,
           ended_at = CASE
-            WHEN $2 = ANY($3::text[]) THEN COALESCE($4::timestamptz, $5::timestamptz, NOW())
+            WHEN $2::text = ANY($3::text[]) THEN COALESCE($4::timestamptz, $5::timestamptz, NOW())
             ELSE ended_at
           END,
           duration_seconds = CASE
-            WHEN $2 = ANY($3::text[]) THEN GREATEST(
+            WHEN $2::text = ANY($3::text[]) THEN GREATEST(
               0,
               EXTRACT(EPOCH FROM (COALESCE($4::timestamptz, $5::timestamptz, NOW()) - started_at))::INTEGER
             )
